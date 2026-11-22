@@ -36,7 +36,7 @@ if errorlevel 1 goto :fail
 echo === Bien dich AmLichVN.exe ===
 cl %CFLAGS% src\app\AmLichVN.cpp /Fobuild\ /Fe:dist\AmLichVN.exe ^
    /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED shell32.lib user32.lib gdi32.lib advapi32.lib ^
-   ole32.lib comctl32.lib comdlg32.lib winhttp.lib bcrypt.lib
+   ole32.lib comctl32.lib comdlg32.lib winhttp.lib bcrypt.lib runtimeobject.lib oleaut32.lib
 if errorlevel 1 goto :fail
 
 copy /y settings.default.ini dist\ >nul

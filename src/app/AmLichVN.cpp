@@ -28,7 +28,10 @@
 
 #include <windows.h>
 
+#include <aclapi.h>
+#include <appmodel.h>
 #include <commctrl.h>
+#include <sddl.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <xamlom.h>
@@ -43,6 +46,9 @@
 #include <set>
 #include <string>
 #include <vector>
+
+#include <winrt/Windows.ApplicationModel.h>
+#include <winrt/Windows.Foundation.h>
 
 #include "../common/shared.h"
 #include "../common/vnlunar.h"
@@ -103,6 +109,19 @@ std::wstring ExePath() {
     WCHAR path[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
     return std::wstring(path, n);
+}
+
+// Đang chạy từ gói MSIX (Microsoft Store) hay bản cài thường?
+bool IsPackaged() {
+    static int packaged = -1;
+    if (packaged < 0) {
+        UINT32 len = 0;
+        packaged = GetCurrentPackageFullName(&len, nullptr) ==
+                           ERROR_INSUFFICIENT_BUFFER
+                       ? 1
+                       : 0;
+    }
+    return packaged == 1;
 }
 
 std::wstring DataDir() {
@@ -297,8 +316,12 @@ bool ReadDllStatus(const std::wstring& processName, DllStatus* out) {
 
 using PFN_IXDE = decltype(&InitializeXamlDiagnosticsEx);
 
+// Đường dẫn AmLichTap.dll mà tiến trình bảng lịch sẽ nạp. Gán một lần trong
+// wWinMain (xem PrepareTapDll) trước khi có luồng nạp nào chạy.
+std::wstring g_tapDllPath;
+
 HRESULT InjectInto(DWORD pid) {
-    std::wstring dllPath = ExeDir() + L"\\" AMLICH_TAP_DLL;
+    const std::wstring& dllPath = g_tapDllPath;
     if (GetFileAttributesW(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     }
@@ -670,7 +693,29 @@ void UpdateTrayIcon(bool add) {
 // Menu & các lệnh
 ////////////////////////////////////////////////////////////////////////////////
 
+// Bản MSIX: khóa Run trong registry bị ảo hóa nên dùng StartupTask khai báo
+// trong AppxManifest.xml.
+constexpr wchar_t kStartupTaskId[] = L"AmLichVNStartup";
+
+winrt::Windows::ApplicationModel::StartupTask GetStartupTask() {
+    return winrt::Windows::ApplicationModel::StartupTask::GetAsync(
+               kStartupTaskId)
+        .get();
+}
+
 bool IsAutostartEnabled() {
+    if (IsPackaged()) {
+        try {
+            auto state = GetStartupTask().State();
+            return state ==
+                       winrt::Windows::ApplicationModel::StartupTaskState::
+                           Enabled ||
+                   state == winrt::Windows::ApplicationModel::
+                                StartupTaskState::EnabledByPolicy;
+        } catch (...) {
+            return false;
+        }
+    }
     WCHAR buf[MAX_PATH * 2];
     DWORD size = sizeof(buf);
     return RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ,
@@ -678,6 +723,25 @@ bool IsAutostartEnabled() {
 }
 
 void SetAutostart(bool enable) {
+    if (IsPackaged()) {
+        try {
+            auto task = GetStartupTask();
+            if (enable) {
+                auto state = task.RequestEnableAsync().get();
+                if (state == winrt::Windows::ApplicationModel::
+                                 StartupTaskState::DisabledByUser) {
+                    LogLine(L"Khởi động cùng Windows đang bị tắt trong "
+                            L"Settings > Apps > Startup");
+                }
+            } else {
+                task.Disable();
+            }
+        } catch (...) {
+            LogLine(L"Không đổi được StartupTask: " +
+                    HrToString(winrt::to_hresult()));
+        }
+        return;
+    }
     if (enable) {
         std::wstring cmd = L"\"" + ExePath() + L"\"";
         RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, REG_SZ,
@@ -818,6 +882,9 @@ void MessageDlg(HWND owner,
 // --- Kiểm tra ---------------------------------------------------------------
 
 void StartUpdateCheck(bool manual) {
+    if (IsPackaged()) {
+        return;  // bản MSIX được cập nhật qua Microsoft Store
+    }
     if (g_upd.checking) {
         g_upd.manualCheck |= manual;
         return;
@@ -911,7 +978,7 @@ void OnUpdateChecked(upd::CheckResult* raw) {
 }
 
 void MaybeAutoCheckForUpdate() {
-    if (g_upd.checking || g_upd.busy || GetTickCount64() < g_upd.nextAutoCheck ||
+    if (IsPackaged() || g_upd.checking || g_upd.busy || GetTickCount64() < g_upd.nextAutoCheck ||
         !UpdateAutoCheckEnabled()) {
         return;
     }
@@ -1413,8 +1480,10 @@ void LayoutSettings(HWND hwnd) {
 
     top = y + 20;
     y = top + 26;
-    place(IDC_AUTOCHECK, x, y, inner, 24);
-    y += 30;
+    if (!IsPackaged()) {  // bản Store không có ô tự kiểm tra
+        place(IDC_AUTOCHECK, x, y, inner, 24);
+        y += 30;
+    }
     place(IDC_STATUS, x, y, inner, 72);
     y += 78;
     place(IDC_CHECKNOW, x, y, 124, 30);
@@ -1436,7 +1505,9 @@ void RefreshUpdateSettingsStatus() {
         return;
     }
     std::wstring s = L"Phiên bản đang dùng: " AMLICH_VERSION L"\n";
-    if (g_upd.checking) {
+    if (IsPackaged()) {
+        s += L"Bản cài từ Microsoft Store được cập nhật tự động qua Store.";
+    } else if (g_upd.checking) {
         s += L"Đang kiểm tra cập nhật...";
     } else if (g_upd.busy) {
         s += L"Đang cập nhật...";
@@ -1449,6 +1520,11 @@ void RefreshUpdateSettingsStatus() {
     SetDlgItemTextW(g_settingsWnd, IDC_STATUS, s.c_str());
     EnableWindow(GetDlgItem(g_settingsWnd, IDC_CHECKNOW),
                  !g_upd.checking && !g_upd.busy);
+    if (IsPackaged()) {
+        for (int id : {IDC_AUTOCHECK, IDC_CHECKNOW, IDC_RELEASES}) {
+            ShowWindow(GetDlgItem(g_settingsWnd, id), SW_HIDE);
+        }
+    }
 }
 
 bool SaveUpdateSettings(HWND hwnd) {
@@ -1837,12 +1913,14 @@ void ShowMenu() {
         AppendMenuW(menu, MF_STRING | (g_upd.busy ? MF_GRAYED : 0),
                     ID_UPDATE_NOW, text.c_str());
     }
-    AppendMenuW(menu,
-                MF_STRING | (g_upd.checking || g_upd.busy ? MF_GRAYED : 0),
-                ID_CHECK_UPDATE,
-                g_upd.checking ? L"Đang kiểm tra cập nhật..."
-                               : L"Kiểm tra cập nhật");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (!IsPackaged()) {
+        AppendMenuW(menu,
+                    MF_STRING | (g_upd.checking || g_upd.busy ? MF_GRAYED : 0),
+                    ID_CHECK_UPDATE,
+                    g_upd.checking ? L"Đang kiểm tra cập nhật..."
+                                   : L"Kiểm tra cập nhật");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
     AppendMenuW(menu, MF_STRING, ID_UNLOAD,
                 L"Gỡ âm lịch khỏi lịch (khởi động lại shell)");
     AppendMenuW(menu, MF_STRING, ID_EXIT, L"Thoát");
@@ -1989,6 +2067,138 @@ bool HasArg(PCWSTR arg) {
     return found;
 }
 
+// Bản MSIX không chạy install.ps1 nên tự làm phần việc của nó: tạo
+// %ProgramData%\AmLichVN, cấp quyền ghi cho tiến trình bảng lịch (chạy trong
+// AppContainer) và tạo settings.ini mặc định.
+//
+// Thêm quyền `rights` (kế thừa xuống thư mục con / file) cho các SID dạng chuỗi.
+void GrantAccess(const std::wstring& dir,
+                 std::initializer_list<PCWSTR> sidStrings,
+                 DWORD rights) {
+    PACL oldDacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                              &oldDacl, nullptr, &sd) != ERROR_SUCCESS) {
+        return;
+    }
+    std::vector<PSID> sids;
+    std::vector<EXPLICIT_ACCESSW> ea;
+    for (PCWSTR s : sidStrings) {
+        PSID sid = nullptr;
+        if (ConvertStringSidToSidW(s, &sid)) {
+            sids.push_back(sid);
+        }
+    }
+    for (PSID sid : sids) {
+        EXPLICIT_ACCESSW e{};
+        e.grfAccessPermissions = rights;
+        e.grfAccessMode = GRANT_ACCESS;
+        e.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        e.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        e.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        e.Trustee.ptstrName = (LPWSTR)sid;
+        ea.push_back(e);
+    }
+    PACL newDacl = nullptr;
+    if (!ea.empty() && SetEntriesInAclW((ULONG)ea.size(), ea.data(), oldDacl,
+                                        &newDacl) == ERROR_SUCCESS) {
+        DWORD rc = SetNamedSecurityInfoW((LPWSTR)dir.c_str(), SE_FILE_OBJECT,
+                                         DACL_SECURITY_INFORMATION, nullptr,
+                                         nullptr, newDacl, nullptr);
+        // ACCESS_DENIED: thư mục do bộ cài (Admin) tạo, đã có sẵn quyền.
+        if (rc != ERROR_SUCCESS && rc != ERROR_ACCESS_DENIED) {
+            LogLine(L"Không cấp được quyền cho " + dir + L": " +
+                    upd::Win32ErrorText(rc));
+        }
+        LocalFree(newDacl);
+    }
+    for (PSID sid : sids) {
+        if (sid) {
+            LocalFree(sid);
+        }
+    }
+    LocalFree(sd);
+}
+
+void EnsurePackagedDataDir() {
+    std::wstring dir = DataDir();
+    CreateDirectoryW(dir.c_str(), nullptr);
+    CreateDirectoryW((dir + L"\\status").c_str(), nullptr);
+    // ALL APPLICATION PACKAGES + Users: DLL trong shell ghi file trạng thái.
+    GrantAccess(dir, {L"S-1-15-2-1", L"S-1-5-32-545"},
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE |
+                    DELETE);
+
+    std::wstring ini = dir + L"\\" AMLICH_SETTINGS_FILE;
+    if (GetFileAttributesW(ini.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
+    // settings.default.ini (UTF-8) trong gói -> settings.ini UTF-16 để
+    // GetPrivateProfileString và Notepad đọc đúng tiếng Việt.
+    std::string utf8;
+    std::wstring err;
+    if (!upd::ReadWholeFile(ExeDir() + L"\\settings.default.ini", 256 * 1024,
+                            &utf8, &err)) {
+        return;
+    }
+    if (utf8.size() >= 3 && (unsigned char)utf8[0] == 0xEF &&
+        (unsigned char)utf8[1] == 0xBB && (unsigned char)utf8[2] == 0xBF) {
+        utf8.erase(0, 3);
+    }
+    std::wstring text = L"\xFEFF" + upd::Utf8ToWide(utf8);
+    std::string bytes((const char*)text.data(), text.size() * sizeof(wchar_t));
+    if (upd::WriteWholeFile(ini, bytes, &err)) {
+        LogLine(L"Đã tạo settings.ini mặc định");
+    }
+}
+
+// Bản MSIX: file trong C:\Program Files\WindowsApps chỉ cho chính gói đọc, nên
+// tiến trình bảng lịch (AppContainer khác) không nạp được AmLichTap.dll từ đó.
+// Chép DLL sang LocalState của gói (chỉ người dùng hiện tại ghi được) và cho
+// mọi AppContainer quyền CHỈ ĐỌC. Không dùng %ProgramData%\AmLichVN vì thư mục
+// đó ai cũng ghi được: người dùng khác có thể thay DLL để chạy code trong shell
+// của bạn.
+std::wstring PrepareTapDll() {
+    std::wstring src = ExeDir() + L"\\" AMLICH_TAP_DLL;
+    WCHAR family[PACKAGE_FAMILY_NAME_MAX_LENGTH + 1];
+    UINT32 len = ARRAYSIZE(family);
+    WCHAR local[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, ARRAYSIZE(local));
+    if (GetCurrentPackageFamilyName(&len, family) != ERROR_SUCCESS || n == 0 ||
+        n >= ARRAYSIZE(local)) {
+        return src;
+    }
+    std::wstring dir = std::wstring(local, n) + L"\\Packages\\" + family +
+                       L"\\LocalState\\tap";
+    SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+    GrantAccess(dir, {L"S-1-15-2-1"}, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE);
+
+    std::wstring name = L"AmLichTap-" AMLICH_VERSION L".dll";
+    std::wstring dst = dir + L"\\" + name;
+    // Thất bại khi bản cùng phiên bản đang được shell nạp (file bị khóa): dùng
+    // luôn bản đó.
+    if (!CopyFileW(src.c_str(), dst.c_str(), FALSE) &&
+        GetFileAttributesW(dst.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        LogLine(L"Không chép được AmLichTap.dll: " +
+                upd::Win32ErrorText(GetLastError()));
+        return src;
+    }
+
+    // Dọn DLL của các phiên bản cũ (bản đang bị shell giữ sẽ được xóa ở lần sau).
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\AmLichTap-*.dll").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (_wcsicmp(fd.cFileName, name.c_str()) != 0) {
+                DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return dst;
+}
+
 bool GetArgValue(PCWSTR arg, std::wstring* value) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -2008,9 +2218,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_hInst = hInstance;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CreateDirectoryW(DataDir().c_str(), nullptr);
+    g_tapDllPath =
+        IsPackaged() ? PrepareTapDll() : ExeDir() + L"\\" AMLICH_TAP_DLL;
 
     std::wstring applyDir;
     if (GetArgValue(L"--apply-update", &applyDir)) {
+        if (IsPackaged()) {
+            return upd::kApplyBadArgs;  // gói MSIX không tự ghi đè được
+        }
         std::wstring result;
         DWORD code = upd::ApplyUpdate(applyDir, ExeDir(), &result);
         LogLine(L"--apply-update: " + result + L" (mã " +
@@ -2077,6 +2292,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (IsPackaged()) {
+        EnsurePackagedDataDir();
+    }
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS};
     InitCommonControlsEx(&icc);
     upd::DeleteTree(upd::LocalUpdateRoot());  // dọn file tải tạm của lần trước

@@ -58,6 +58,7 @@ namespace wuxm = winrt::Windows::UI::Xaml::Media;
 
 std::wstring g_dataDir;      // %ProgramData%\AmLichVN
 std::wstring g_processName;  // ShellHost.exe / ShellExperienceHost.exe
+HMODULE g_hModule;           // chính DLL này
 std::atomic<bool> g_debugLog;
 std::mutex g_logMutex;
 
@@ -305,6 +306,9 @@ void WriteStatusFileLocked() {
     text += L"version=" AMLICH_VERSION L"\r\n";
     text += L"build=" + g_status.osBuild + L"\r\n";
     text += L"process=" + g_processName + L"\r\n";
+    WCHAR dllPath[MAX_PATH] = L"";
+    GetModuleFileNameW(g_hModule, dllPath, ARRAYSIZE(dllPath));
+    text += L"dll=" + std::wstring(dllPath) + L"\r\n";
     text += L"pid=" + std::to_wstring(GetCurrentProcessId()) + L"\r\n";
     text += L"state=" + g_status.state + L"\r\n";
     text += L"detail=" + g_status.detail + L"\r\n";
@@ -1462,6 +1466,7 @@ void EnsureInitialized() {
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
+        g_hModule = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
 
         // Ghim DLL: không bao giờ bị gỡ khỏi bộ nhớ khi shell còn chạy (đã có

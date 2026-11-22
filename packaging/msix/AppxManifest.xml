@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest MSIX cho Microsoft Store. tools\build-msix.ps1 thay các giá trị
+  {{...}} (lấy từ Partner Center khi gửi lên Store) rồi đóng gói.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Âm lịch Việt Nam</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Hiện ngày âm lịch Việt Nam trong bảng lịch của đồng hồ trên taskbar Windows 11.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="vi-VN" />
+  </Resources>
+
+  <Applications>
+    <Application Id="AmLichVN" Executable="AmLichVN.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Âm lịch Việt Nam"
+        Description="Âm lịch Việt Nam trong bảng lịch taskbar Windows 11"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- Khởi động cùng Windows (thay cho khóa Run, vốn bị ảo hóa trong gói). -->
+        <desktop:Extension Category="windows.startupTask" Executable="AmLichVN.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="AmLichVNStartup" Enabled="true" DisplayName="Âm lịch Việt Nam" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Ứng dụng desktop Win32: icon khay, nạp TAP vào tiến trình bảng lịch. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
