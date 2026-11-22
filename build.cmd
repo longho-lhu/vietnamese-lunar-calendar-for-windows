@@ -26,7 +26,7 @@ if exist dist rmdir /s /q dist
 mkdir build
 mkdir dist
 
-set CFLAGS=/nologo /std:c++17 /EHsc /permissive- /O2 /MT /W3 /utf-8 /bigobj /DUNICODE /D_UNICODE /DNOMINMAX
+set CFLAGS=/nologo /std:c++20 /EHsc /permissive- /O2 /MT /W3 /utf-8 /bigobj /DUNICODE /D_UNICODE /DNOMINMAX
 
 echo === Bien dich AmLichTap.dll ===
 cl %CFLAGS% /LD src\tap\AmLichTap.cpp /Fobuild\ /Fe:dist\AmLichTap.dll ^
