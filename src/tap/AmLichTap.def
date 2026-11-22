@@ -1,0 +1,4 @@
+LIBRARY AmLichTap
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

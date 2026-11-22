@@ -1,0 +1,51 @@
+# Bien dich tu dong tren GitHub (khong can cai Visual Studio tren may minh).
+# - Moi lan push len main: build, tai file "AmLichVN-dist" o muc Artifacts.
+# - Push tag vX.Y.Z (dung tools\release.ps1): build, KY SO manifest bang secret
+#   AMLICH_SIGNING_KEY va tao GitHub Release. Cac may da cai se duoc hoi cap nhat.
+name: Build AmLichVN
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch tag annotations
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: git fetch --force origin "+refs/tags/*:refs/tags/*"
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build
+        shell: cmd
+        run: build.cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmLichVN-dist
+          path: dist/
+
+      - name: Sign and publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          AMLICH_SIGNING_KEY: ${{ secrets.AMLICH_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $notes = (git tag -l --format='%(contents)' $env:TAG) -join "`n"
+          ./tools/sign-release.ps1 -Tag $env:TAG -DistDir dist -OutDir release -Notes $notes
+          gh release create $env:TAG `
+            release/manifest.txt release/manifest.sig `
+            release/AmLichVN.exe release/AmLichTap.dll `
+            "release/AmLichVN-$($env:TAG.Substring(1)).zip" `
+            --title "AmLichVN $env:TAG" --notes-file release/notes.md
