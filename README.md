@@ -25,8 +25,11 @@ Hoặc đẩy lên GitHub rồi chạy workflow **Build AmLichVN** trong tab Act
 
 Dữ liệu: `C:\ProgramData\AmLichVN\` (settings.ini, status\, app-log.txt).
 
+## Cài đặt hiển thị
+Bấm chuột trái vào icon âm lịch ở khay (hoặc menu chuột phải → **Cài đặt...**) để mở cửa sổ Cài đặt: kiểu hiển thị, cỡ chữ, độ đậm, màu tô ngày lễ, tiết khí, chú thích, khung thông tin ngày, khởi động cùng Windows, cập nhật. Thay đổi được ghi vào `settings.ini` và có hiệu lực khi mở lại bảng lịch.
+
 ## Cập nhật tự động (OTA qua GitHub)
-Menu icon khay → **Cài đặt cập nhật...**: đổi kho GitHub (mặc định `longho-lhu/vietnamese-lunar-calendar-for-windows`), bật/tắt tự kiểm tra (mỗi khi ứng dụng khởi động), **Kiểm tra ngay**.
+Cửa sổ Cài đặt → nhóm **Cập nhật phần mềm**: đổi kho GitHub (mặc định `longho-lhu/vietnamese-lunar-calendar-for-windows`), bật/tắt tự kiểm tra (mỗi khi ứng dụng khởi động), **Kiểm tra ngay**.
 
 Khi có bản mới, ứng dụng hiện thông báo và **luôn hỏi trước khi cài**. Đồng ý thì nó tải về, kiểm tra chữ ký, xin quyền Administrator (UAC), thay file, khởi động lại bảng lịch rồi chạy bản mới.
 
