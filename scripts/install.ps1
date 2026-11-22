@@ -18,6 +18,9 @@ param(
     [string]$Source = $PSScriptRoot
 )
 
+$fontScript = Join-Path $PSScriptRoot 'ConsoleFont.ps1'
+if (Test-Path $fontScript) { . $fontScript }  # phông có đủ dấu tiếng Việt
+
 $ErrorActionPreference = 'Stop'
 
 # --- Tự yêu cầu quyền Administrator ---------------------------------------
@@ -72,7 +75,7 @@ foreach ($f in $Files) {
     }
     Unblock-File $dst -ErrorAction SilentlyContinue
 }
-foreach ($s in 'install.ps1', 'uninstall.ps1', 'check.ps1', 'KiemTra.cmd', 'GoCaiDat.cmd') {
+foreach ($s in 'install.ps1', 'uninstall.ps1', 'check.ps1', 'ConsoleFont.ps1', 'KiemTra.cmd', 'GoCaiDat.cmd') {
     $p = Join-Path $Source $s
     if (Test-Path $p) { Copy-Item $p $InstallDir -Force }
 }

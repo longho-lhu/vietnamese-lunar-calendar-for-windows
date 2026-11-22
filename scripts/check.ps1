@@ -5,6 +5,9 @@
   Dùng sau mỗi lần Windows cập nhật, hoặc khi thấy âm lịch biến mất.
 #>
 
+$fontScript = Join-Path $PSScriptRoot 'ConsoleFont.ps1'
+if (Test-Path $fontScript) { . $fontScript }  # phông có đủ dấu tiếng Việt
+
 $InstallDir = Join-Path $env:ProgramFiles 'AmLichVN'
 $DataDir    = Join-Path $env:ProgramData 'AmLichVN'
 

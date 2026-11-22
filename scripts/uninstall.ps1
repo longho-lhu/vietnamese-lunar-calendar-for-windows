@@ -7,6 +7,9 @@
 #>
 param([switch]$KeepData)
 
+$fontScript = Join-Path $PSScriptRoot 'ConsoleFont.ps1'
+if (Test-Path $fontScript) { . $fontScript }  # phông có đủ dấu tiếng Việt
+
 $ErrorActionPreference = 'Continue'
 
 $principal = New-Object Security.Principal.WindowsPrincipal(
