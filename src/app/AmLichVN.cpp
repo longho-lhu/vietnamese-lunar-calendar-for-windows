@@ -1201,34 +1201,140 @@ void PromptUpdate() {
     RefreshUpdateSettingsStatus();
 }
 
-// --- Cửa sổ "Cập nhật phần mềm" ---------------------------------------------
+// --- Cửa sổ "Cài đặt" (hiển thị, chung, cập nhật) ---------------------------
 
-constexpr wchar_t kSettingsClass[] = L"AmLichVN_UpdateSettings";
+void ShowStatusDialog();
+
+constexpr wchar_t kSettingsClass[] = L"AmLichVN_Settings";
 constexpr DWORD kSettingsStyle =
     WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-constexpr int kSettingsWidth = 520;   // DIP
-constexpr int kSettingsHeight = 344;  // DIP
+constexpr int kSettingsWidth = 760;   // DIP
+constexpr int kSettingsHeight = 500;  // DIP
 
 enum SettingsControl : int {
     IDC_TITLE = 200,
+    IDC_SUBTITLE,
+    IDC_GROUP_DISPLAY,
+    IDC_FORMAT_LABEL,
+    IDC_FORMAT,
+    IDC_FONTSIZE_LABEL,
+    IDC_FONTSIZE,
+    IDC_FONTSIZE_UD,
+    IDC_OPACITY_LABEL,
+    IDC_OPACITY,
+    IDC_OPACITY_UD,
+    IDC_DAYFONT_LABEL,
+    IDC_DAYFONT,
+    IDC_DAYFONT_UD,
+    IDC_MARGIN_LABEL,
+    IDC_MARGIN,
+    IDC_MARGIN_UD,
+    IDC_MOVEUP,
+    IDC_HIGHLIGHT,
+    IDC_COLOR_SWATCH,
+    IDC_COLOR_PICK,
+    IDC_SOLARTERM,
+    IDC_TOOLTIP,
+    IDC_DAYINFO,
+    IDC_GROUP_GENERAL,
+    IDC_AUTOSTART,
+    IDC_NOTIFY,
+    IDC_DEBUGLOG,
+    IDC_GROUP_UPDATE,
     IDC_VERSION,
     IDC_REPO_LABEL,
     IDC_REPO,
     IDC_DEFAULT_REPO,
-    IDC_NOTE,
     IDC_AUTOCHECK,
     IDC_STATUS,
-    IDC_RELEASES,
     IDC_CHECKNOW,
+    IDC_RELEASES,
+    IDC_OPEN_INI,
+    IDC_SHOW_STATUS,
+    IDC_APPLY,
     // IDOK = Lưu, IDCANCEL = Đóng
+};
+
+// Ô số trong settings.ini (giới hạn giống AmLichTap.dll).
+struct NumberField {
+    int label, edit, updown;
+    int minValue, maxValue;
+    PCWSTR key;
+    int def;
+    PCWSTR text;
+};
+constexpr NumberField kNumberFields[] = {
+    {IDC_FONTSIZE_LABEL, IDC_FONTSIZE, IDC_FONTSIZE_UD, 6, 30, L"fontSize", 10,
+     L"Cỡ chữ âm lịch (6 - 30):"},
+    {IDC_OPACITY_LABEL, IDC_OPACITY, IDC_OPACITY_UD, 10, 100, L"opacity", 80,
+     L"Độ đậm chữ âm lịch, % (10 - 100):"},
+    {IDC_DAYFONT_LABEL, IDC_DAYFONT, IDC_DAYFONT_UD, 0, 40,
+     L"dayNumberFontSize", 0, L"Cỡ chữ ngày dương (0 = mặc định):"},
+    {IDC_MARGIN_LABEL, IDC_MARGIN, IDC_MARGIN_UD, 0, 30, L"bottomMargin", 1,
+     L"Khoảng cách tới đáy ô, px (0 - 30):"},
+};
+
+// Ô đánh dấu trong settings.ini.
+struct CheckField {
+    int id;
+    PCWSTR key;
+    bool def;
+};
+constexpr CheckField kCheckFields[] = {
+    {IDC_MOVEUP, L"moveDayNumberUp", true},
+    {IDC_HIGHLIGHT, L"highlightSpecialDays", true},
+    {IDC_SOLARTERM, L"showSolarTerm", false},
+    {IDC_TOOLTIP, L"showTooltip", true},
+    {IDC_DAYINFO, L"showDayInfo", true},
+    {IDC_NOTIFY, L"notifyOnError", true},
+    {IDC_DEBUGLOG, L"debugLog", false},
 };
 
 struct SettingsUi {
     UINT dpi = 96;
     HFONT font = nullptr;
     HFONT titleFont = nullptr;
+    COLORREF highlight = RGB(0xE0, 0x40, 0x40);
+    HBRUSH swatchBrush = nullptr;
 };
 SettingsUi g_sui;
+
+std::wstring SettingsIniPath() {
+    return DataDir() + L"\\" AMLICH_SETTINGS_FILE;
+}
+
+int IniInt(PCWSTR key, int def) {
+    return (int)GetPrivateProfileIntW(AMLICH_INI_SECTION, key, def,
+                                      SettingsIniPath().c_str());
+}
+
+std::wstring IniString(PCWSTR key, PCWSTR def) {
+    WCHAR buf[128] = L"";
+    GetPrivateProfileStringW(AMLICH_INI_SECTION, key, def, buf, ARRAYSIZE(buf),
+                             SettingsIniPath().c_str());
+    return buf;
+}
+
+bool IniWrite(PCWSTR key, const std::wstring& value) {
+    return WritePrivateProfileStringW(AMLICH_INI_SECTION, key, value.c_str(),
+                                      SettingsIniPath().c_str()) != FALSE;
+}
+
+bool ParseColor(std::wstring s, COLORREF* out) {
+    if (!s.empty() && s[0] == L'#') {
+        s.erase(0, 1);
+    }
+    if (s.size() == 8) {
+        s.erase(0, 2);  // bỏ kênh alpha
+    }
+    if (s.size() != 6 ||
+        s.find_first_not_of(L"0123456789abcdefABCDEF") != std::wstring::npos) {
+        return false;
+    }
+    unsigned long v = wcstoul(s.c_str(), nullptr, 16);
+    *out = RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+    return true;
+}
 
 int Dip(int v) {
     return MulDiv(v, (int)g_sui.dpi, 96);
@@ -1258,24 +1364,82 @@ void ApplySettingsFonts(HWND hwnd) {
 }
 
 void LayoutSettings(HWND hwnd) {
-    const int W = kSettingsWidth, M = 24, inner = W - 2 * M;
+    const int W = kSettingsWidth, M = 20, gap = 16;
+    const int colW = (W - 2 * M - gap) / 2;
+    const int pad = 14, inner = colW - 2 * pad;
     auto place = [&](int id, int x, int y, int w, int h) {
         SetWindowPos(GetDlgItem(hwnd, id), nullptr, Dip(x), Dip(y), Dip(w),
                      Dip(h), SWP_NOZORDER | SWP_NOACTIVATE);
     };
-    place(IDC_TITLE, M, 18, inner, 30);
-    place(IDC_VERSION, M, 52, inner, 20);
-    place(IDC_REPO_LABEL, M, 86, inner, 20);
-    place(IDC_REPO, M, 109, inner - 104, 26);
-    place(IDC_DEFAULT_REPO, M + inner - 96, 108, 96, 28);
-    place(IDC_NOTE, M, 144, inner, 40);
-    place(IDC_AUTOCHECK, M, 192, inner, 24);
-    place(IDC_STATUS, M, 226, inner, 58);
-    int by = kSettingsHeight - 24 - 30;
-    place(IDC_RELEASES, M, by, 150, 30);
+
+    place(IDC_TITLE, M, 12, W - 2 * M, 30);
+    place(IDC_SUBTITLE, M, 44, W - 2 * M, 20);
+
+    // Cột trái: hiển thị.
+    int top = 74, x = M + pad, y = top + 26;
+    place(IDC_FORMAT_LABEL, x, y + 4, 104, 20);
+    place(IDC_FORMAT, x + 104, y, inner - 104, 200);
+    y += 36;
+    for (const auto& f : kNumberFields) {
+        place(f.label, x, y + 4, inner - 84, 20);
+        place(f.edit, x + inner - 76, y, 76, 26);
+        SendMessageW(GetDlgItem(hwnd, f.updown), UDM_SETBUDDY,
+                     (WPARAM)GetDlgItem(hwnd, f.edit), 0);
+        y += 32;
+    }
+    y += 2;
+    place(IDC_MOVEUP, x, y, inner, 24);
+    y += 28;
+    place(IDC_HIGHLIGHT, x, y, inner - 132, 24);
+    place(IDC_COLOR_SWATCH, x + inner - 128, y + 2, 26, 20);
+    place(IDC_COLOR_PICK, x + inner - 96, y - 2, 96, 28);
+    y += 30;
+    place(IDC_SOLARTERM, x, y, inner, 24);
+    y += 28;
+    place(IDC_TOOLTIP, x, y, inner, 24);
+    y += 28;
+    place(IDC_DAYINFO, x, y, inner, 24);
+    y += 28;
+    place(IDC_GROUP_DISPLAY, M, top, colW, y - top + 8);
+    int leftBottom = y + 8;
+
+    // Cột phải: chung + cập nhật.
+    int rx = M + colW + gap;
+    x = rx + pad;
+    y = top + 26;
+    place(IDC_AUTOSTART, x, y, inner, 24);
+    y += 28;
+    place(IDC_NOTIFY, x, y, inner, 24);
+    y += 28;
+    place(IDC_DEBUGLOG, x, y, inner, 24);
+    y += 28;
+    place(IDC_GROUP_GENERAL, rx, top, colW, y - top + 8);
+
+    top = y + 20;
+    y = top + 26;
+    place(IDC_VERSION, x, y, inner, 20);
+    y += 26;
+    place(IDC_REPO_LABEL, x, y, inner, 20);
+    y += 22;
+    place(IDC_REPO, x, y, inner - 100, 26);
+    place(IDC_DEFAULT_REPO, x + inner - 92, y - 1, 92, 28);
+    y += 34;
+    place(IDC_AUTOCHECK, x, y, inner, 24);
+    y += 28;
+    place(IDC_STATUS, x, y, inner, 52);
+    y += 56;
+    place(IDC_CHECKNOW, x, y, 124, 30);
+    place(IDC_RELEASES, x + 132, y, 150, 30);
+    y += 38;
+    place(IDC_GROUP_UPDATE, rx, top, colW, y - top);
+
+    // Hàng nút dưới cùng.
+    int by = (std::max)(leftBottom, y) + 16;
+    place(IDC_OPEN_INI, M, by, 130, 30);
+    place(IDC_SHOW_STATUS, M + 138, by, 110, 30);
     place(IDCANCEL, W - M - 84, by, 84, 30);
     place(IDOK, W - M - 84 - 8 - 84, by, 84, 30);
-    place(IDC_CHECKNOW, W - M - 84 - 8 - 84 - 8 - 124, by, 124, 30);
+    place(IDC_APPLY, W - M - 84 - 8 - 84 - 8 - 84, by, 84, 30);
 }
 
 void RefreshUpdateSettingsStatus() {
@@ -1330,11 +1494,126 @@ bool SaveUpdateSettings(HWND hwnd) {
         LogLine(L"Đổi kho cập nhật thành " + repo);
     }
     RegSetString(L"UpdateRepo", repo);
-    bool autoCheck =
-        IsDlgButtonChecked(hwnd, IDC_AUTOCHECK) == BST_CHECKED;
+    bool autoCheck = IsDlgButtonChecked(hwnd, IDC_AUTOCHECK) == BST_CHECKED;
     RegSetString(L"UpdateAutoCheck", autoCheck ? L"1" : L"0");
     RefreshUpdateSettingsStatus();
     return true;
+}
+
+void SetSwatchColor(HWND hwnd, COLORREF color) {
+    g_sui.highlight = color;
+    if (g_sui.swatchBrush) {
+        DeleteObject(g_sui.swatchBrush);
+    }
+    g_sui.swatchBrush = CreateSolidBrush(color);
+    InvalidateRect(GetDlgItem(hwnd, IDC_COLOR_SWATCH), nullptr, TRUE);
+}
+
+void UpdateDependentControls(HWND hwnd) {
+    bool highlight = IsDlgButtonChecked(hwnd, IDC_HIGHLIGHT) == BST_CHECKED;
+    EnableWindow(GetDlgItem(hwnd, IDC_COLOR_PICK), highlight);
+}
+
+// Đọc settings.ini + registry vào các ô.
+void LoadSettingsToUi(HWND hwnd) {
+    SendDlgItemMessageW(hwnd, IDC_FORMAT, CB_SETCURSEL,
+                        IniString(L"format", L"dayOnly") == L"dayMonth" ? 1 : 0,
+                        0);
+    for (const auto& f : kNumberFields) {
+        int v = IniInt(f.key, f.def);
+        bool valid = v >= f.minValue && v <= f.maxValue &&
+                     !(f.edit == IDC_DAYFONT && v > 0 && v < 6);
+        if (!valid) {
+            v = f.def;
+        }
+        SendDlgItemMessageW(hwnd, f.updown, UDM_SETPOS32, 0, v);
+        SetDlgItemInt(hwnd, f.edit, v, FALSE);
+    }
+    for (const auto& c : kCheckFields) {
+        CheckDlgButton(hwnd, c.id,
+                       IniInt(c.key, c.def ? 1 : 0) != 0 ? BST_CHECKED
+                                                         : BST_UNCHECKED);
+    }
+    COLORREF color = RGB(0xE0, 0x40, 0x40);
+    ParseColor(IniString(L"highlightColor", L"#E04040"), &color);
+    SetSwatchColor(hwnd, color);
+    CheckDlgButton(hwnd, IDC_AUTOSTART,
+                   IsAutostartEnabled() ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hwnd, IDC_AUTOCHECK,
+                   UpdateAutoCheckEnabled() ? BST_CHECKED : BST_UNCHECKED);
+    UpdateDependentControls(hwnd);
+}
+
+// Kiểm tra rồi ghi tất cả cài đặt. Trả về false nếu có ô không hợp lệ.
+bool SaveAllSettings(HWND hwnd) {
+    int values[ARRAYSIZE(kNumberFields)];
+    for (size_t i = 0; i < ARRAYSIZE(kNumberFields); i++) {
+        const auto& f = kNumberFields[i];
+        BOOL ok = FALSE;
+        int v = (int)GetDlgItemInt(hwnd, f.edit, &ok, FALSE);
+        bool valid = ok && v >= f.minValue && v <= f.maxValue &&
+                     !(f.edit == IDC_DAYFONT && v > 0 && v < 6);
+        if (!valid) {
+            std::wstring range =
+                f.edit == IDC_DAYFONT
+                    ? std::wstring(L"0 (mặc định) hoặc từ 6 đến 40")
+                    : L"từ " + std::to_wstring(f.minValue) + L" đến " +
+                          std::to_wstring(f.maxValue);
+            MessageDlg(hwnd, TD_WARNING_ICON, L"Giá trị không hợp lệ",
+                       std::wstring(f.text) + L"\nHãy nhập số " + range + L".");
+            HWND edit = GetDlgItem(hwnd, f.edit);
+            SetFocus(edit);
+            SendMessageW(edit, EM_SETSEL, 0, -1);
+            return false;
+        }
+        values[i] = v;
+    }
+    if (!SaveUpdateSettings(hwnd)) {
+        return false;
+    }
+
+    bool ok = true;
+    int format = (int)SendDlgItemMessageW(hwnd, IDC_FORMAT, CB_GETCURSEL, 0, 0);
+    ok &= IniWrite(L"format", format == 1 ? L"dayMonth" : L"dayOnly");
+    for (size_t i = 0; i < ARRAYSIZE(kNumberFields); i++) {
+        ok &= IniWrite(kNumberFields[i].key, std::to_wstring(values[i]));
+    }
+    for (const auto& c : kCheckFields) {
+        ok &= IniWrite(c.key,
+                       IsDlgButtonChecked(hwnd, c.id) == BST_CHECKED ? L"1"
+                                                                     : L"0");
+    }
+    WCHAR color[16];
+    swprintf_s(color, L"#%02X%02X%02X", GetRValue(g_sui.highlight),
+               GetGValue(g_sui.highlight), GetBValue(g_sui.highlight));
+    ok &= IniWrite(L"highlightColor", color);
+
+    bool autostart = IsDlgButtonChecked(hwnd, IDC_AUTOSTART) == BST_CHECKED;
+    if (autostart != IsAutostartEnabled()) {
+        SetAutostart(autostart);
+    }
+
+    if (!ok) {
+        MessageDlg(hwnd, TD_ERROR_ICON, L"Không lưu được cài đặt",
+                   L"Không ghi được " + SettingsIniPath() + L"\n" +
+                       upd::Win32ErrorText(GetLastError()));
+        return false;
+    }
+    LogLine(L"Đã lưu cài đặt");
+    return true;
+}
+
+void PickHighlightColor(HWND hwnd) {
+    static COLORREF custom[16] = {RGB(0xE0, 0x40, 0x40), RGB(0xC4, 0x2B, 0x1C),
+                                  RGB(0xD8, 0x8C, 0x00), RGB(0x00, 0x78, 0xD4)};
+    CHOOSECOLORW cc{sizeof(cc)};
+    cc.hwndOwner = hwnd;
+    cc.rgbResult = g_sui.highlight;
+    cc.lpCustColors = custom;
+    cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if (ChooseColorW(&cc)) {
+        SetSwatchColor(hwnd, cc.rgbResult);
+    }
 }
 
 void CreateSettingsControls(HWND hwnd) {
@@ -1344,9 +1623,54 @@ void CreateSettingsControls(HWND hwnd) {
                                0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)id, g_hInst,
                                nullptr);
     };
-    make(L"STATIC", L"Cập nhật phần mềm", SS_NOPREFIX, IDC_TITLE);
-    make(L"STATIC", L"Phiên bản đang dùng: " AMLICH_VERSION, SS_NOPREFIX,
-         IDC_VERSION);
+    auto check = [&](PCWSTR text, int id) {
+        make(L"BUTTON", text, WS_TABSTOP | BS_AUTOCHECKBOX, id);
+    };
+    make(L"STATIC", L"Cài đặt Âm lịch Việt Nam", SS_NOPREFIX, IDC_TITLE);
+    make(L"STATIC",
+         L"Thay đổi về hiển thị có hiệu lực khi bạn mở lại bảng lịch (bấm vào "
+         L"đồng hồ trên taskbar).",
+         SS_NOPREFIX, IDC_SUBTITLE);
+
+    // Hiển thị
+    make(L"BUTTON", L"Hiển thị trên bảng lịch", BS_GROUPBOX, IDC_GROUP_DISPLAY);
+    make(L"STATIC", L"Kiểu hiển thị:", SS_NOPREFIX, IDC_FORMAT_LABEL);
+    HWND combo = make(L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+                      IDC_FORMAT);
+    SendMessageW(combo, CB_ADDSTRING, 0,
+                 (LPARAM)L"Chỉ ngày âm (mùng 1 hiện cả tháng)");
+    SendMessageW(combo, CB_ADDSTRING, 0,
+                 (LPARAM)L"Luôn hiện ngày/tháng (vd. 14/10)");
+    for (const auto& f : kNumberFields) {
+        make(L"STATIC", f.text, SS_NOPREFIX, f.label);
+        make(L"EDIT", L"", WS_TABSTOP | ES_NUMBER | ES_RIGHT, f.edit,
+             WS_EX_CLIENTEDGE);
+        HWND ud = make(UPDOWN_CLASSW, nullptr,
+                       UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS |
+                           UDS_NOTHOUSANDS,
+                       f.updown);
+        SendMessageW(ud, UDM_SETRANGE32, f.minValue, f.maxValue);
+    }
+    check(L"Đẩy số ngày dương lên phía trên ô", IDC_MOVEUP);
+    check(L"Tô màu mùng 1, rằm và ngày lễ", IDC_HIGHLIGHT);
+    make(L"STATIC", L"", WS_BORDER, IDC_COLOR_SWATCH);
+    make(L"BUTTON", L"Chọn màu...", WS_TABSTOP | BS_PUSHBUTTON, IDC_COLOR_PICK);
+    check(L"Hiện tên tiết khí vào ngày bắt đầu tiết", IDC_SOLARTERM);
+    check(L"Rê chuột lên một ngày để xem chi tiết", IDC_TOOLTIP);
+    check(L"Hiện khung thông tin ngày dưới bảng lịch", IDC_DAYINFO);
+
+    // Chung
+    make(L"BUTTON", L"Chung", BS_GROUPBOX, IDC_GROUP_GENERAL);
+    check(L"Khởi động cùng Windows", IDC_AUTOSTART);
+    check(L"Thông báo khi âm lịch không hoạt động", IDC_NOTIFY);
+    check(L"Ghi log chi tiết (để tìm lỗi)", IDC_DEBUGLOG);
+
+    // Cập nhật
+    make(L"BUTTON", L"Cập nhật phần mềm", BS_GROUPBOX, IDC_GROUP_UPDATE);
+    make(L"STATIC",
+         L"Phiên bản đang dùng: " AMLICH_VERSION
+         L" · chỉ cài bản có chữ ký số hợp lệ",
+         SS_NOPREFIX, IDC_VERSION);
     make(L"STATIC", L"Kho GitHub chứa bản phát hành (chủ/tên-kho):",
          SS_NOPREFIX, IDC_REPO_LABEL);
     HWND edit = make(L"EDIT", UpdateRepo().c_str(), WS_TABSTOP | ES_AUTOHSCROLL,
@@ -1354,19 +1678,18 @@ void CreateSettingsControls(HWND hwnd) {
     SendMessageW(edit, EM_SETCUEBANNER, TRUE, (LPARAM)upd::kDefaultRepo);
     SendMessageW(edit, EM_LIMITTEXT, 300, 0);
     make(L"BUTTON", L"Mặc định", WS_TABSTOP | BS_PUSHBUTTON, IDC_DEFAULT_REPO);
-    make(L"STATIC",
-         L"Bản cập nhật được tải từ mục Releases của kho này và chỉ được cài khi "
-         L"có chữ ký số hợp lệ của nhà phát triển. Luôn hỏi bạn trước khi cài.",
-         SS_NOPREFIX, IDC_NOTE);
-    HWND check = make(L"BUTTON",
-                      L"Tự động kiểm tra cập nhật mỗi khi khởi động",
-                      WS_TABSTOP | BS_AUTOCHECKBOX, IDC_AUTOCHECK);
-    SendMessageW(check, BM_SETCHECK,
-                 UpdateAutoCheckEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    check(L"Tự động kiểm tra cập nhật mỗi khi khởi động", IDC_AUTOCHECK);
     make(L"STATIC", L"", SS_NOPREFIX, IDC_STATUS);
+    make(L"BUTTON", L"Kiểm tra ngay", WS_TABSTOP | BS_PUSHBUTTON, IDC_CHECKNOW);
     make(L"BUTTON", L"Mở trang Releases", WS_TABSTOP | BS_PUSHBUTTON,
          IDC_RELEASES);
-    make(L"BUTTON", L"Kiểm tra ngay", WS_TABSTOP | BS_PUSHBUTTON, IDC_CHECKNOW);
+
+    // Nút dưới cùng
+    make(L"BUTTON", L"Mở settings.ini", WS_TABSTOP | BS_PUSHBUTTON,
+         IDC_OPEN_INI);
+    make(L"BUTTON", L"Trạng thái...", WS_TABSTOP | BS_PUSHBUTTON,
+         IDC_SHOW_STATUS);
+    make(L"BUTTON", L"Áp dụng", WS_TABSTOP | BS_PUSHBUTTON, IDC_APPLY);
     make(L"BUTTON", L"Lưu", WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK);
     make(L"BUTTON", L"Đóng", WS_TABSTOP | BS_PUSHBUTTON, IDCANCEL);
 }
@@ -1381,6 +1704,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
             CreateSettingsControls(hwnd);
             ApplySettingsFonts(hwnd);
             LayoutSettings(hwnd);
+            LoadSettingsToUi(hwnd);
             return 0;
         case WM_DPICHANGED: {
             g_sui.dpi = HIWORD(wParam);
@@ -1393,15 +1717,24 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
         }
         case WM_CTLCOLORSTATIC: {
             HDC dc = (HDC)wParam;
-            SetBkColor(dc, GetSysColor(COLOR_WINDOW));
             int id = GetDlgCtrlID((HWND)lParam);
-            SetTextColor(dc, GetSysColor(id == IDC_NOTE || id == IDC_VERSION
+            if (id == IDC_COLOR_SWATCH && g_sui.swatchBrush) {
+                return (LRESULT)g_sui.swatchBrush;
+            }
+            SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+            SetTextColor(dc, GetSysColor(id == IDC_SUBTITLE || id == IDC_VERSION
                                              ? COLOR_GRAYTEXT
                                              : COLOR_WINDOWTEXT));
             return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
         }
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
+                case IDC_HIGHLIGHT:
+                    UpdateDependentControls(hwnd);
+                    return 0;
+                case IDC_COLOR_PICK:
+                    PickHighlightColor(hwnd);
+                    return 0;
                 case IDC_DEFAULT_REPO:
                     SetDlgItemTextW(hwnd, IDC_REPO, upd::kDefaultRepo);
                     return 0;
@@ -1419,8 +1752,19 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
                         StartUpdateCheck(true);
                     }
                     return 0;
+                case IDC_OPEN_INI:
+                    ShellExecuteW(hwnd, L"open", L"notepad.exe",
+                                  SettingsIniPath().c_str(), nullptr,
+                                  SW_SHOWNORMAL);
+                    return 0;
+                case IDC_SHOW_STATUS:
+                    ShowStatusDialog();
+                    return 0;
+                case IDC_APPLY:
+                    SaveAllSettings(hwnd);
+                    return 0;
                 case IDOK:
-                    if (SaveUpdateSettings(hwnd)) {
+                    if (SaveAllSettings(hwnd)) {
                         DestroyWindow(hwnd);
                     }
                     return 0;
@@ -1439,7 +1783,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-void OpenUpdateSettings() {
+void OpenSettingsWindow() {
     if (g_settingsWnd) {
         ShowWindow(g_settingsWnd, SW_RESTORE);
         SetForegroundWindow(g_settingsWnd);
@@ -1462,10 +1806,9 @@ void OpenUpdateSettings() {
     GetCursorPos(&pt);
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
-    HWND hwnd = CreateWindowExW(
-        0, kSettingsClass, L"Cập nhật - Âm lịch Việt Nam", kSettingsStyle,
-        mi.rcWork.left, mi.rcWork.top, 100, 100, nullptr, nullptr, g_hInst,
-        nullptr);
+    HWND hwnd = CreateWindowExW(0, kSettingsClass, L"Cài đặt - Âm lịch Việt Nam",
+                                kSettingsStyle, mi.rcWork.left, mi.rcWork.top,
+                                100, 100, nullptr, nullptr, g_hInst, nullptr);
     if (!hwnd) {
         return;
     }
@@ -1477,7 +1820,8 @@ void OpenUpdateSettings() {
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
     int x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left - w) / 2;
     int y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - h) / 2;
-    SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(hwnd, nullptr, x, (std::max)(y, (int)mi.rcWork.top), w, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 
     if (g_icon) {
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_icon);
@@ -1486,7 +1830,7 @@ void OpenUpdateSettings() {
     RefreshUpdateSettingsStatus();
     ShowWindow(hwnd, SW_SHOWNORMAL);
     SetForegroundWindow(hwnd);
-    SetFocus(GetDlgItem(hwnd, IDC_CHECKNOW));
+    SetFocus(GetDlgItem(hwnd, IDC_FORMAT));
 }
 
 void ShowStatusDialog() {
@@ -1538,9 +1882,10 @@ void ShowMenu() {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, header.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Cài đặt...");
+    SetMenuDefaultItem(menu, ID_SETTINGS, FALSE);  // = bấm chuột trái
     AppendMenuW(menu, MF_STRING, ID_STATUS, L"Trạng thái...");
     AppendMenuW(menu, MF_STRING, ID_REINJECT, L"Nạp lại vào lịch");
-    AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Mở cài đặt (settings.ini)");
     AppendMenuW(menu, MF_STRING, ID_DATADIR, L"Mở thư mục dữ liệu / log");
     AppendMenuW(menu,
                 MF_STRING | (IsAutostartEnabled() ? MF_CHECKED : MF_UNCHECKED),
@@ -1552,14 +1897,12 @@ void ShowMenu() {
                             L"...";
         AppendMenuW(menu, MF_STRING | (g_upd.busy ? MF_GRAYED : 0),
                     ID_UPDATE_NOW, text.c_str());
-        SetMenuDefaultItem(menu, ID_UPDATE_NOW, FALSE);
     }
     AppendMenuW(menu,
                 MF_STRING | (g_upd.checking || g_upd.busy ? MF_GRAYED : 0),
                 ID_CHECK_UPDATE,
                 g_upd.checking ? L"Đang kiểm tra cập nhật..."
                                : L"Kiểm tra cập nhật");
-    AppendMenuW(menu, MF_STRING, ID_UPDATE_SETTINGS, L"Cài đặt cập nhật...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_UNLOAD,
                 L"Gỡ âm lịch khỏi lịch (khởi động lại shell)");
@@ -1594,12 +1937,9 @@ void OnCommand(UINT id) {
             UpdateTrayIcon(false);
             break;
         }
-        case ID_SETTINGS: {
-            std::wstring path = DataDir() + L"\\" AMLICH_SETTINGS_FILE;
-            ShellExecuteW(g_hWnd, L"open", L"notepad.exe", path.c_str(),
-                          nullptr, SW_SHOWNORMAL);
+        case ID_SETTINGS:
+            OpenSettingsWindow();
             break;
-        }
         case ID_DATADIR: {
             std::wstring path = DataDir();
             ShellExecuteW(g_hWnd, L"open", path.c_str(), nullptr, nullptr,
@@ -1608,6 +1948,11 @@ void OnCommand(UINT id) {
         }
         case ID_AUTOSTART:
             SetAutostart(!IsAutostartEnabled());
+            if (g_settingsWnd) {
+                CheckDlgButton(g_settingsWnd, IDC_AUTOSTART,
+                               IsAutostartEnabled() ? BST_CHECKED
+                                                    : BST_UNCHECKED);
+            }
             break;
         case ID_UPDATE_NOW:
             PromptUpdate();
@@ -1616,7 +1961,7 @@ void OnCommand(UINT id) {
             StartUpdateCheck(true);
             break;
         case ID_UPDATE_SETTINGS:
-            OpenUpdateSettings();
+            OpenSettingsWindow();
             break;
         case ID_UNLOAD:
             if (MessageBoxW(g_hWnd,
@@ -1672,7 +2017,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case NIN_SELECT:
                 case NIN_KEYSELECT:
                 case WM_LBUTTONUP:
-                    ShowStatusDialog();
+                    OpenSettingsWindow();  // mở lần 2 chỉ đưa cửa sổ lên trước
                     break;
             }
             return 0;
@@ -1793,7 +2138,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS};
     InitCommonControlsEx(&icc);
     upd::DeleteTree(upd::LocalUpdateRoot());  // dọn file tải tạm của lần trước
     bool justUpdated = HasArg(L"--updated");
@@ -1849,7 +2194,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     SetTimer(g_hWnd, kTimerId, kTimerMs, nullptr);
     g_upd.nextAutoCheck = GetTickCount64() + kAutoCheckFirstDelay;
     if (openSettings) {
-        OpenUpdateSettings();
+        OpenSettingsWindow();
     }
 
     MSG msg;
