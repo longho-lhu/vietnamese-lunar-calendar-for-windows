@@ -136,6 +136,7 @@ struct Settings {
     winrt::Windows::UI::Color highlightColor{255, 0xE0, 0x40, 0x40};
     bool showSolarTerm = false;
     bool showTooltip = true;
+    bool showDayInfo = true;
 };
 
 Settings g_settings;
@@ -216,6 +217,7 @@ void LoadSettings() {
     }
     s.showSolarTerm = readInt(L"showSolarTerm", 0) != 0;
     s.showTooltip = readInt(L"showTooltip", 1) != 0;
+    s.showDayInfo = readInt(L"showDayInfo", 1) != 0;
     g_debugLog = readInt(L"debugLog", 0) != 0;
 
     std::lock_guard<std::mutex> lock(g_settingsMutex);
@@ -594,6 +596,9 @@ struct TrackedItem {
 struct TrackedCalendar {
     winrt::weak_ref<wuxc::CalendarView> view;
     winrt::event_token dayItemChangingToken{};
+    winrt::event_token selectedDatesToken{};
+    winrt::weak_ref<wuxc::StackPanel> infoPanel;
+    int infoDay = 0;  // ngày (dương) lúc cập nhật khung thông tin gần nhất
     wf::IInspectable originalVAlign{nullptr};
     wf::IInspectable originalDayFontSize{nullptr};
     bool vAlignSet = false;
@@ -942,6 +947,181 @@ void ApplyCalendarSettings(TrackedCalendar& tc, wuxc::CalendarView const& cv) {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Khung thông tin âm lịch của ngày (dưới cùng bảng lịch)
+////////////////////////////////////////////////////////////////////////////////
+
+constexpr wchar_t kInfoPanelName[] = L"AmLichVnInfoPanel";
+
+std::wstring WeekdayName(long jd) {
+    // Số ngày Julius chia 7 dư 0 là thứ Hai.
+    static const wchar_t* const kNames[7] = {L"Thứ Hai", L"Thứ Ba",  L"Thứ Tư",
+                                             L"Thứ Năm", L"Thứ Sáu", L"Thứ Bảy",
+                                             L"Chủ nhật"};
+    return kNames[((jd % 7) + 7) % 7];
+}
+
+// Grid chứa bảng lịch của flyout đồng hồ (Windows 11: "CalendarSection", các
+// hàng: tiêu đề / đồng hồ / lịch / Focus). Khung thông tin được thêm vào một
+// hàng MỚI ở cuối, không đụng tới vị trí các phần tử sẵn có của Windows.
+wuxc::Grid FindInfoHost(wuxc::CalendarView const& cv) {
+    wux::DependencyObject cur = cv;
+    wuxc::Grid fallback{nullptr};
+    for (int depth = 0; cur && depth < 10; depth++) {
+        cur = wuxm::VisualTreeHelper::GetParent(cur);
+        auto fe = cur ? cur.try_as<wux::FrameworkElement>() : nullptr;
+        if (!fe) {
+            continue;
+        }
+        if (fe.Name() == L"CalendarSection") {
+            if (auto g = fe.try_as<wuxc::Grid>();
+                g && g.RowDefinitions().Size() > 0) {
+                return g;
+            }
+        }
+        if (!fallback && fe.Name() == L"CalendarControlScrollViewer") {
+            auto g = wuxm::VisualTreeHelper::GetParent(fe).try_as<wuxc::Grid>();
+            if (g && g.RowDefinitions().Size() > 0) {
+                fallback = g;
+            }
+        }
+        if (winrt::get_class_name(cur) == L"ActionCenter.ClockCalendarView") {
+            break;
+        }
+    }
+    return fallback;
+}
+
+wuxc::StackPanel CreateInfoPanel() {
+    return wux::Markup::XamlReader::Load(
+               LR"(<StackPanel
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Name="AmLichVnInfoPanel" Margin="0,4,0,12">
+  <Border Height="1" Margin="0,0,0,10"
+          Background="{ThemeResource SystemControlForegroundBaseLowBrush}" />
+  <TextBlock FontSize="12" TextWrapping="Wrap"
+             Foreground="{ThemeResource SystemControlForegroundBaseMediumBrush}" />
+  <TextBlock FontSize="15" FontWeight="SemiBold" Margin="0,2,0,0" TextWrapping="Wrap"
+             Foreground="{ThemeResource SystemControlForegroundBaseHighBrush}" />
+  <TextBlock FontSize="12" Margin="0,6,0,0" LineHeight="18" TextWrapping="Wrap"
+             Foreground="{ThemeResource SystemControlForegroundBaseMediumHighBrush}" />
+  <TextBlock FontSize="12" FontWeight="SemiBold" Margin="0,6,0,0"
+             TextWrapping="Wrap" Visibility="Collapsed" />
+</StackPanel>)")
+        .as<wuxc::StackPanel>();
+}
+
+void UpdateInfoPanel(wuxc::StackPanel const& panel, wuxc::CalendarView const& cv) {
+    const Settings s = GetSettings();
+    panel.Visibility(s.showDayInfo ? wux::Visibility::Visible
+                                   : wux::Visibility::Collapsed);
+    auto children = panel.Children();
+    if (!s.showDayInfo || children.Size() < 5) {
+        return;
+    }
+
+    // Ngày đang chọn trong lịch (nếu có), mặc định là hôm nay.
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    LocalDate d{now.wDay, now.wMonth, now.wYear};
+    auto selected = cv.SelectedDates();
+    if (selected && selected.Size() > 0) {
+        d = ToLocalDate(selected.GetAt(selected.Size() - 1));
+    }
+    vnlunar::LunarDate l = vnlunar::SolarToLunar(d.day, d.month, d.year);
+
+    WCHAR solar[32];
+    swprintf_s(solar, L"%02d/%02d/%04d", d.day, d.month, d.year);
+    std::wstring caption = (IsToday(d) ? L"Hôm nay · " : L"") +
+                           WeekdayName(l.jd) + L", " + solar;
+    std::wstring title = L"Ngày " + std::to_wstring(l.day) + L" tháng " +
+                         amlich::MonthName(l.month) +
+                         (l.leap ? L" nhuận" : L"") + L" năm " +
+                         vnlunar::YearCanChi(l.year);
+    std::wstring details =
+        L"Ngày " + vnlunar::DayCanChi(l.jd) + L" · tháng " +
+        vnlunar::MonthCanChi(l.month, l.year) +
+        (l.monthLength == 30 ? L" (tháng đủ)" : L" (tháng thiếu)") +
+        L"\nTiết khí: " + vnlunar::kSolarTerms[vnlunar::SolarTermIndex(l.jd)] +
+        (vnlunar::SolarTermStartsOn(l.jd) ? L" (bắt đầu từ ngày này)" : L"") +
+        L"\nGiờ hoàng đạo: " + vnlunar::GioHoangDao(l.jd);
+    std::wstring special;
+    if (const wchar_t* holiday = vnlunar::LunarHoliday(l)) {
+        special = holiday;
+    } else if (l.day == 1) {
+        special = L"Mùng 1 đầu tháng";
+    } else if (l.day == 15) {
+        special = L"Ngày rằm";
+    }
+
+    children.GetAt(1).as<wuxc::TextBlock>().Text(caption);
+    children.GetAt(2).as<wuxc::TextBlock>().Text(title);
+    children.GetAt(3).as<wuxc::TextBlock>().Text(details);
+    auto specialTb = children.GetAt(4).as<wuxc::TextBlock>();
+    specialTb.Text(special);
+    specialTb.Foreground(wuxm::SolidColorBrush(s.highlightColor));
+    specialTb.Visibility(special.empty() ? wux::Visibility::Collapsed
+                                         : wux::Visibility::Visible);
+}
+
+void EnsureInfoPanel(TrackedCalendar& tc, wuxc::CalendarView const& cv) {
+    if (auto panel = tc.infoPanel.get()) {
+        UpdateInfoPanel(panel, cv);
+        SYSTEMTIME now;
+        GetLocalTime(&now);
+        tc.infoDay = now.wDay;
+        return;
+    }
+    if (!GetSettings().showDayInfo) {
+        return;
+    }
+    auto host = FindInfoHost(cv);
+    if (!host) {
+        LOG(L"Chưa tìm thấy chỗ đặt khung thông tin ngày");
+        return;
+    }
+
+    wuxc::StackPanel panel{nullptr};
+    for (auto const& child : host.Children()) {
+        auto fe = child.try_as<wux::FrameworkElement>();
+        if (fe && fe.Name() == kInfoPanelName) {
+            panel = fe.try_as<wuxc::StackPanel>();
+        }
+    }
+    if (!panel) {
+        panel = CreateInfoPanel();
+        wuxc::RowDefinition row;
+        row.Height(wux::GridLengthHelper::Auto());
+        host.RowDefinitions().Append(row);
+        int index = (int)host.RowDefinitions().Size() - 1;
+        wuxc::Grid::SetRow(panel, index);
+        if (host.ColumnDefinitions().Size() > 1) {
+            wuxc::Grid::SetColumnSpan(panel,
+                                      (int)host.ColumnDefinitions().Size());
+        }
+        // Mỗi lần mở lại bảng lịch: cập nhật (có thể đã sang ngày mới).
+        panel.Loaded([weakView = winrt::make_weak(cv)](
+                         wf::IInspectable const& sender,
+                         wux::RoutedEventArgs const&) {
+            try {
+                if (auto view = weakView.get()) {
+                    UpdateInfoPanel(sender.as<wuxc::StackPanel>(), view);
+                }
+            } catch (...) {
+                RecordError(L"InfoPanelLoaded", winrt::to_hresult());
+            }
+        });
+        host.Children().Append(panel);
+        LOG(L"Đã thêm khung thông tin ngày vào hàng %d", index);
+    }
+    tc.infoPanel = winrt::make_weak(panel);
+    UpdateInfoPanel(panel, cv);
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    tc.infoDay = now.wDay;
+}
+
 // Áp dụng lại cài đặt cho mọi thứ trên luồng hiện tại.
 void RefreshCurrentThread() {
     if (!t_state) {
@@ -952,6 +1132,7 @@ void RefreshCurrentThread() {
         if (auto cv = tc->view.get()) {
             try {
                 ApplyCalendarSettings(*tc, cv);
+                EnsureInfoPanel(*tc, cv);
             } catch (...) {
                 RecordError(L"RefreshCalendar", winrt::to_hresult());
             }
@@ -975,9 +1156,72 @@ void RefreshIfSettingsChanged() {
     }
 }
 
+// Chẩn đoán (chỉ khi debugLog=1): ghi cây cha của CalendarView ra log.
+std::wstring DescribeElement(wux::DependencyObject const& o) {
+    std::wstring s = winrt::get_class_name(o).c_str();
+    if (auto fe = o.try_as<wux::FrameworkElement>()) {
+        if (!fe.Name().empty()) {
+            s += L" #" + std::wstring(fe.Name());
+        }
+        WCHAR b[96];
+        swprintf_s(b, L" [%.0fx%.0f]", fe.ActualWidth(), fe.ActualHeight());
+        s += b;
+        if (wuxm::VisualTreeHelper::GetParent(o).try_as<wuxc::Grid>()) {
+            s += L" row=" + std::to_wstring(wuxc::Grid::GetRow(fe));
+        }
+    }
+    if (auto g = o.try_as<wuxc::Grid>()) {
+        s += L" rows=" + std::to_wstring(g.RowDefinitions().Size());
+    }
+    if (auto sp = o.try_as<wuxc::StackPanel>()) {
+        s += sp.Orientation() == wuxc::Orientation::Vertical ? L" (dọc)"
+                                                             : L" (ngang)";
+    }
+    s += L" con=" +
+         std::to_wstring(wuxm::VisualTreeHelper::GetChildrenCount(o));
+    return s;
+}
+
+void DumpCalendarAncestors(wuxc::CalendarView const& cv) {
+    static bool dumped = false;
+    if (!g_debugLog || dumped) {
+        return;
+    }
+    dumped = true;
+    LOG(L"--- Cây cha của CalendarView ---");
+    wux::DependencyObject cur = cv;
+    for (int depth = 0; cur && depth < 14; depth++) {
+        LOG(L"%d: %ls", depth, DescribeElement(cur).c_str());
+        if (depth > 0 && depth <= 8) {
+            int n = wuxm::VisualTreeHelper::GetChildrenCount(cur);
+            for (int i = 0; i < n && i < 8; i++) {
+                LOG(L"     - %ls",
+                    DescribeElement(wuxm::VisualTreeHelper::GetChild(cur, i))
+                        .c_str());
+            }
+        }
+        cur = wuxm::VisualTreeHelper::GetParent(cur);
+    }
+}
+
 // Tự kiểm tra: vài giây sau khi thấy bảng lịch, xem đã gắn được âm lịch chưa.
 // Trả về true nếu cần kiểm tra lại (bảng lịch đang bị thu gọn).
 bool EvaluateSelfTest() {
+    if (t_state) {
+        auto calendars = t_state->calendars;
+        for (auto& tc : calendars) {
+            if (auto cv = tc->view.get()) {
+                DumpCalendarAncestors(cv);
+                if (!tc->infoPanel.get()) {
+                    try {
+                        EnsureInfoPanel(*tc, cv);  // thử lại nếu lần đầu chưa được
+                    } catch (...) {
+                        RecordError(L"InfoPanel", winrt::to_hresult());
+                    }
+                }
+            }
+        }
+    }
     int dayItems, errors;
     std::wstring lastError, state;
     {
@@ -1066,17 +1310,38 @@ void ProcessCalendarView(wuxc::CalendarView const& cv) {
     if (!tc) {
         tc = std::make_shared<TrackedCalendar>();
         tc->view = winrt::make_weak(cv);
+        std::weak_ptr<TrackedCalendar> weakTc = tc;
         tc->dayItemChangingToken = cv.CalendarViewDayItemChanging(
-            [](wuxc::CalendarView const&,
-               wuxc::CalendarViewDayItemChangingEventArgs const& args) {
+            [weakTc](wuxc::CalendarView const& sender,
+                     wuxc::CalendarViewDayItemChangingEventArgs const& args) {
                 try {
                     RefreshIfSettingsChanged();
                     if (!args.InRecycleQueue() && args.Item()) {
                         ProcessDayItem(args.Item());
                     }
+                    // Sang ngày mới khi bảng lịch đang mở: cập nhật khung.
+                    auto t = weakTc.lock();
+                    SYSTEMTIME now;
+                    GetLocalTime(&now);
+                    if (t && t->infoDay != 0 && t->infoDay != now.wDay) {
+                        EnsureInfoPanel(*t, sender);
+                    }
                 } catch (...) {
                     RecordError(L"CalendarViewDayItemChanging",
                                 winrt::to_hresult());
+                }
+            });
+        tc->selectedDatesToken = cv.SelectedDatesChanged(
+            [weakTc](wuxc::CalendarView const& sender,
+                     wuxc::CalendarViewSelectedDatesChangedEventArgs const&) {
+                try {
+                    if (auto t = weakTc.lock()) {
+                        if (auto panel = t->infoPanel.get()) {
+                            UpdateInfoPanel(panel, sender);
+                        }
+                    }
+                } catch (...) {
+                    RecordError(L"SelectedDatesChanged", winrt::to_hresult());
                 }
             });
         st.calendars.push_back(tc);
@@ -1091,6 +1356,23 @@ void ProcessCalendarView(wuxc::CalendarView const& cv) {
     }
 
     ApplyCalendarSettings(*tc, cv);
+
+    // Thêm khung thông tin sau khi XAML xử lý xong đợt thêm phần tử hiện tại.
+    if (st.dispatcherQueue) {
+        st.dispatcherQueue.TryEnqueue(
+            [weakTc = std::weak_ptr<TrackedCalendar>(tc),
+             weakView = winrt::make_weak(cv)] {
+                try {
+                    auto t = weakTc.lock();
+                    auto view = weakView.get();
+                    if (t && view) {
+                        EnsureInfoPanel(*t, view);
+                    }
+                } catch (...) {
+                    RecordError(L"InfoPanel", winrt::to_hresult());
+                }
+            });
+    }
     StartSelfTestTimer();
 }
 

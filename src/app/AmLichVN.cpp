@@ -717,9 +717,12 @@ int RestartShellProcesses() {
 // Cập nhật phần mềm qua GitHub Releases (có chữ ký số, luôn hỏi trước khi cài)
 ////////////////////////////////////////////////////////////////////////////////
 
-constexpr ULONGLONG kAutoCheckFirstDelay = 60ull * 1000;
-constexpr ULONGLONG kAutoCheckInterval = 6ull * 60 * 60 * 1000;
-constexpr ULONGLONG kAutoCheckRetry = 30ull * 60 * 1000;
+// Chỉ tự kiểm tra một lần khi khởi động. Lúc mới bật máy có thể chưa có mạng
+// nên nếu lỗi thì thử lại tối đa kAutoCheckMaxAttempts lần.
+constexpr ULONGLONG kAutoCheckFirstDelay = 30ull * 1000;
+constexpr ULONGLONG kAutoCheckRetry = 10ull * 60 * 1000;
+constexpr int kAutoCheckMaxAttempts = 3;
+constexpr ULONGLONG kNever = ~0ull;
 constexpr int kBtnUpdate = 1001;
 constexpr int kBtnLater = 1002;
 
@@ -727,7 +730,8 @@ struct UpdateUiState {
     bool checking = false;
     bool manualCheck = false;
     bool busy = false;  // đang hỏi / tải / cài
-    ULONGLONG nextAutoCheck = 0;
+    ULONGLONG nextAutoCheck = kNever;
+    int autoAttempts = 0;
     std::shared_ptr<upd::CheckResult> available;  // bản mới tìm được
     std::wstring balloonedVersion;
 };
@@ -875,10 +879,12 @@ void OnUpdateChecked(upd::CheckResult* raw) {
     RegSetString(L"UpdateLastResult", summary);
     LogLine(L"Kiểm tra cập nhật (" + r->repo + L"): " + summary);
 
-    g_upd.nextAutoCheck =
-        GetTickCount64() + (r->kind == upd::CheckResult::Error
-                                ? kAutoCheckRetry
-                                : kAutoCheckInterval);
+    if (!manual && r->kind == upd::CheckResult::Error &&
+        g_upd.autoAttempts < kAutoCheckMaxAttempts) {
+        g_upd.nextAutoCheck = GetTickCount64() + kAutoCheckRetry;
+    } else {
+        g_upd.nextAutoCheck = kNever;
+    }
     RefreshUpdateSettingsStatus();
 
     if (manual) {
@@ -909,7 +915,8 @@ void MaybeAutoCheckForUpdate() {
         !UpdateAutoCheckEnabled()) {
         return;
     }
-    g_upd.nextAutoCheck = GetTickCount64() + kAutoCheckInterval;
+    g_upd.nextAutoCheck = kNever;
+    g_upd.autoAttempts++;
     StartUpdateCheck(false);
 }
 
@@ -1352,7 +1359,7 @@ void CreateSettingsControls(HWND hwnd) {
          L"có chữ ký số hợp lệ của nhà phát triển. Luôn hỏi bạn trước khi cài.",
          SS_NOPREFIX, IDC_NOTE);
     HWND check = make(L"BUTTON",
-                      L"Tự động kiểm tra cập nhật (khi khởi động và mỗi 6 giờ)",
+                      L"Tự động kiểm tra cập nhật mỗi khi khởi động",
                       WS_TABSTOP | BS_AUTOCHECKBOX, IDC_AUTOCHECK);
     SendMessageW(check, BM_SETCHECK,
                  UpdateAutoCheckEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);

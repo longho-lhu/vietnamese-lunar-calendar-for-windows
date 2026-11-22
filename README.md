@@ -1,6 +1,6 @@
 # AmLichVN - Âm lịch Việt Nam trong lịch Taskbar Windows 11
 
-Hiện ngày âm lịch Việt Nam (tính theo UTC+7) dưới mỗi ngày trong bảng lịch mở ra khi bấm vào đồng hồ trên taskbar.
+Hiện ngày âm lịch Việt Nam (tính theo UTC+7) dưới mỗi ngày trong bảng lịch mở ra khi bấm vào đồng hồ trên taskbar, kèm khung thông tin ngày (can chi, tiết khí, giờ hoàng đạo, ngày lễ) ở dưới cùng bảng lịch.
 
 | Thành phần | Vai trò |
 |---|---|
@@ -26,7 +26,7 @@ Hoặc đẩy lên GitHub rồi chạy workflow **Build AmLichVN** trong tab Act
 Dữ liệu: `C:\ProgramData\AmLichVN\` (settings.ini, status\, app-log.txt).
 
 ## Cập nhật tự động (OTA qua GitHub)
-Menu icon khay → **Cài đặt cập nhật...**: đổi kho GitHub (mặc định `longho-lhu/vietnamese-lunar-calendar-for-windows`), bật/tắt tự kiểm tra (khi khởi động và mỗi 6 giờ), **Kiểm tra ngay**.
+Menu icon khay → **Cài đặt cập nhật...**: đổi kho GitHub (mặc định `longho-lhu/vietnamese-lunar-calendar-for-windows`), bật/tắt tự kiểm tra (mỗi khi ứng dụng khởi động), **Kiểm tra ngay**.
 
 Khi có bản mới, ứng dụng hiện thông báo và **luôn hỏi trước khi cài**. Đồng ý thì nó tải về, kiểm tra chữ ký, xin quyền Administrator (UAC), thay file, khởi động lại bảng lịch rồi chạy bản mới.
 
