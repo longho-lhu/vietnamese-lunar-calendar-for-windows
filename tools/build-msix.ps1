@@ -17,6 +17,8 @@ param(
     [string]$IdentityName = 'AmLichVN.Test',
     [string]$Publisher = 'CN=AmLichVN Test',
     [string]$PublisherDisplayName = 'AmLichVN',
+    # Phải trùng một tên đã đặt chỗ trong Partner Center.
+    [string]$DisplayName = 'Âm lịch VN',
     [string]$DistDir = 'dist',
     [string]$CertThumbprint = ''
 )
@@ -53,6 +55,7 @@ $escape = { param($s) [Security.SecurityElement]::Escape($s) }
 $manifest = $manifest.Replace('{{IDENTITY_NAME}}', (& $escape $IdentityName)).
     Replace('{{PUBLISHER}}', (& $escape $Publisher)).
     Replace('{{PUBLISHER_DISPLAY_NAME}}', (& $escape $PublisherDisplayName)).
+    Replace('{{DISPLAY_NAME}}', (& $escape $DisplayName)).
     Replace('{{VERSION}}', $version)
 [IO.File]::WriteAllText((Join-Path $layout 'AppxManifest.xml'), $manifest, (New-Object Text.UTF8Encoding($false)))
 

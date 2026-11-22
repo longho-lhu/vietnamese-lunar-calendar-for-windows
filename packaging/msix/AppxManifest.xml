@@ -17,7 +17,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Âm lịch Việt Nam</DisplayName>
+    <DisplayName>{{DISPLAY_NAME}}</DisplayName>
     <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>Hiện ngày âm lịch Việt Nam trong bảng lịch của đồng hồ trên taskbar Windows 11.</Description>
@@ -34,7 +34,7 @@
   <Applications>
     <Application Id="AmLichVN" Executable="AmLichVN.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Âm lịch Việt Nam"
+        DisplayName="{{DISPLAY_NAME}}"
         Description="Âm lịch Việt Nam trong bảng lịch taskbar Windows 11"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
@@ -42,7 +42,7 @@
       <Extensions>
         <!-- Khởi động cùng Windows (thay cho khóa Run, vốn bị ảo hóa trong gói). -->
         <desktop:Extension Category="windows.startupTask" Executable="AmLichVN.exe" EntryPoint="Windows.FullTrustApplication">
-          <desktop:StartupTask TaskId="AmLichVNStartup" Enabled="true" DisplayName="Âm lịch Việt Nam" />
+          <desktop:StartupTask TaskId="AmLichVNStartup" Enabled="true" DisplayName="{{DISPLAY_NAME}}" />
         </desktop:Extension>
       </Extensions>
     </Application>
