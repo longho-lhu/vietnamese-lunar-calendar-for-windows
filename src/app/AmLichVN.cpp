@@ -738,9 +738,9 @@ struct UpdateUiState {
 UpdateUiState g_upd;
 HWND g_settingsWnd;
 
+// Kho GitHub chứa bản phát hành (cố định).
 std::wstring UpdateRepo() {
-    std::wstring r = upd::NormalizeRepo(RegGetString(L"UpdateRepo"));
-    return r.empty() ? std::wstring(upd::kDefaultRepo) : r;
+    return upd::kDefaultRepo;
 }
 
 bool UpdateAutoCheckEnabled() {
@@ -1241,10 +1241,6 @@ enum SettingsControl : int {
     IDC_NOTIFY,
     IDC_DEBUGLOG,
     IDC_GROUP_UPDATE,
-    IDC_VERSION,
-    IDC_REPO_LABEL,
-    IDC_REPO,
-    IDC_DEFAULT_REPO,
     IDC_AUTOCHECK,
     IDC_STATUS,
     IDC_CHECKNOW,
@@ -1417,17 +1413,10 @@ void LayoutSettings(HWND hwnd) {
 
     top = y + 20;
     y = top + 26;
-    place(IDC_VERSION, x, y, inner, 20);
-    y += 26;
-    place(IDC_REPO_LABEL, x, y, inner, 20);
-    y += 22;
-    place(IDC_REPO, x, y, inner - 100, 26);
-    place(IDC_DEFAULT_REPO, x + inner - 92, y - 1, 92, 28);
-    y += 34;
     place(IDC_AUTOCHECK, x, y, inner, 24);
-    y += 28;
-    place(IDC_STATUS, x, y, inner, 52);
-    y += 56;
+    y += 30;
+    place(IDC_STATUS, x, y, inner, 72);
+    y += 78;
     place(IDC_CHECKNOW, x, y, 124, 30);
     place(IDC_RELEASES, x + 132, y, 150, 30);
     y += 38;
@@ -1446,54 +1435,23 @@ void RefreshUpdateSettingsStatus() {
     if (!g_settingsWnd) {
         return;
     }
-    std::wstring s;
+    std::wstring s = L"Phiên bản đang dùng: " AMLICH_VERSION L"\n";
     if (g_upd.checking) {
-        s = L"Đang kiểm tra cập nhật...";
+        s += L"Đang kiểm tra cập nhật...";
     } else if (g_upd.busy) {
-        s = L"Đang cập nhật...";
+        s += L"Đang cập nhật...";
     } else {
         std::wstring last = RegGetString(L"UpdateLastCheck");
-        s = last.empty() ? L"Chưa kiểm tra lần nào."
-                         : L"Lần kiểm tra gần nhất: " + last + L"\n" +
-                               RegGetString(L"UpdateLastResult");
+        s += last.empty() ? L"Chưa kiểm tra lần nào."
+                          : L"Lần kiểm tra gần nhất: " + last + L"\n" +
+                                RegGetString(L"UpdateLastResult");
     }
     SetDlgItemTextW(g_settingsWnd, IDC_STATUS, s.c_str());
     EnableWindow(GetDlgItem(g_settingsWnd, IDC_CHECKNOW),
                  !g_upd.checking && !g_upd.busy);
 }
 
-bool ReadRepoField(HWND hwnd, std::wstring* repo) {
-    WCHAR buf[512] = L"";
-    GetDlgItemTextW(hwnd, IDC_REPO, buf, ARRAYSIZE(buf));
-    *repo = upd::NormalizeRepo(buf);
-    if (repo->empty()) {
-        MessageDlg(hwnd, TD_WARNING_ICON, L"Tên kho GitHub không hợp lệ",
-                   std::wstring(L"Hãy nhập dạng chủ/tên-kho hoặc dán đường dẫn "
-                                L"GitHub, ví dụ:\n") +
-                       upd::kDefaultRepo);
-        HWND edit = GetDlgItem(hwnd, IDC_REPO);
-        SetFocus(edit);
-        SendMessageW(edit, EM_SETSEL, 0, -1);
-        return false;
-    }
-    SetDlgItemTextW(hwnd, IDC_REPO, repo->c_str());
-    return true;
-}
-
 bool SaveUpdateSettings(HWND hwnd) {
-    std::wstring repo;
-    if (!ReadRepoField(hwnd, &repo)) {
-        return false;
-    }
-    if (repo != UpdateRepo()) {
-        // Đổi kho: kết quả kiểm tra cũ không còn đúng.
-        g_upd.available.reset();
-        g_upd.balloonedVersion.clear();
-        RegSetString(L"UpdateLastCheck", L"");
-        RegSetString(L"UpdateLastResult", L"");
-        LogLine(L"Đổi kho cập nhật thành " + repo);
-    }
-    RegSetString(L"UpdateRepo", repo);
     bool autoCheck = IsDlgButtonChecked(hwnd, IDC_AUTOCHECK) == BST_CHECKED;
     RegSetString(L"UpdateAutoCheck", autoCheck ? L"1" : L"0");
     RefreshUpdateSettingsStatus();
@@ -1667,17 +1625,6 @@ void CreateSettingsControls(HWND hwnd) {
 
     // Cập nhật
     make(L"BUTTON", L"Cập nhật phần mềm", BS_GROUPBOX, IDC_GROUP_UPDATE);
-    make(L"STATIC",
-         L"Phiên bản đang dùng: " AMLICH_VERSION
-         L" · chỉ cài bản có chữ ký số hợp lệ",
-         SS_NOPREFIX, IDC_VERSION);
-    make(L"STATIC", L"Kho GitHub chứa bản phát hành (chủ/tên-kho):",
-         SS_NOPREFIX, IDC_REPO_LABEL);
-    HWND edit = make(L"EDIT", UpdateRepo().c_str(), WS_TABSTOP | ES_AUTOHSCROLL,
-                     IDC_REPO, WS_EX_CLIENTEDGE);
-    SendMessageW(edit, EM_SETCUEBANNER, TRUE, (LPARAM)upd::kDefaultRepo);
-    SendMessageW(edit, EM_LIMITTEXT, 300, 0);
-    make(L"BUTTON", L"Mặc định", WS_TABSTOP | BS_PUSHBUTTON, IDC_DEFAULT_REPO);
     check(L"Tự động kiểm tra cập nhật mỗi khi khởi động", IDC_AUTOCHECK);
     make(L"STATIC", L"", SS_NOPREFIX, IDC_STATUS);
     make(L"BUTTON", L"Kiểm tra ngay", WS_TABSTOP | BS_PUSHBUTTON, IDC_CHECKNOW);
@@ -1722,9 +1669,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
                 return (LRESULT)g_sui.swatchBrush;
             }
             SetBkColor(dc, GetSysColor(COLOR_WINDOW));
-            SetTextColor(dc, GetSysColor(id == IDC_SUBTITLE || id == IDC_VERSION
-                                             ? COLOR_GRAYTEXT
-                                             : COLOR_WINDOWTEXT));
+            SetTextColor(dc, GetSysColor(id == IDC_SUBTITLE ? COLOR_GRAYTEXT
+                                                            : COLOR_WINDOWTEXT));
             return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
         }
         case WM_COMMAND:
@@ -1735,18 +1681,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
                 case IDC_COLOR_PICK:
                     PickHighlightColor(hwnd);
                     return 0;
-                case IDC_DEFAULT_REPO:
-                    SetDlgItemTextW(hwnd, IDC_REPO, upd::kDefaultRepo);
+                case IDC_RELEASES:
+                    ShellExecuteW(hwnd, L"open",
+                                  upd::ReleasePageUrl(UpdateRepo()).c_str(),
+                                  nullptr, nullptr, SW_SHOWNORMAL);
                     return 0;
-                case IDC_RELEASES: {
-                    std::wstring repo;
-                    if (ReadRepoField(hwnd, &repo)) {
-                        ShellExecuteW(hwnd, L"open",
-                                      upd::ReleasePageUrl(repo).c_str(),
-                                      nullptr, nullptr, SW_SHOWNORMAL);
-                    }
-                    return 0;
-                }
                 case IDC_CHECKNOW:
                     if (SaveUpdateSettings(hwnd)) {
                         StartUpdateCheck(true);
