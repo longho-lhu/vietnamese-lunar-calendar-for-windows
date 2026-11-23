@@ -12,7 +12,7 @@
 #include "vnlunar.h"
 
 #ifndef AMLICH_VERSION
-#define AMLICH_VERSION L"1.2.1"
+#define AMLICH_VERSION L"1.3.0"
 #endif
 #define AMLICH_DATA_DIR_NAME L"AmLichVN"  // trong %ProgramData%
 #define AMLICH_SETTINGS_FILE L"settings.ini"
