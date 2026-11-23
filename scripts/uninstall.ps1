@@ -3,7 +3,9 @@
 .SYNOPSIS
   Gỡ cài đặt Âm lịch Việt Nam cho lịch Taskbar.
 .PARAMETER KeepData
-  Giữ lại thư mục C:\ProgramData\AmLichVN (settings.ini, log).
+  Giữ lại thư mục C:\ProgramData\AmLichVN (settings.ini).
+  (Log của từng người dùng ở %LOCALAPPDATA%\AmLichVN không bị xoá: script chạy
+  với quyền Admin không xoá đệ quy thư mục mà người dùng thường ghi được.)
 #>
 param([switch]$KeepData)
 
@@ -34,7 +36,22 @@ Get-Process ShellHost, ShellExperienceHost -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 3
 
-Write-Host "3/5 Xoá $InstallDir ..."
+# Xoá thư mục dữ liệu TRƯỚC khi xoá AmLichVN.exe: việc xoá do exe làm qua
+# handle, không đi theo junction / symlink (Remove-Item -Recurse thì có).
+$exe = Join-Path $InstallDir 'AmLichVN.exe'
+if ($KeepData) {
+    Write-Host "3/5 Giữ lại $DataDir"
+} elseif (Test-Path $exe) {
+    Write-Host "3/5 Xoá $DataDir ..."
+    $p = Start-Process $exe -ArgumentList '--remove-datadir' -Wait -PassThru -WindowStyle Hidden
+    if ($p.ExitCode -ne 0) {
+        Write-Warning "Chưa xoá hết $DataDir (mã $($p.ExitCode))."
+    }
+} else {
+    Write-Warning "Không thấy $exe nên không xoá $DataDir. Có thể xoá tay thư mục này."
+}
+
+Write-Host "4/5 Xoá $InstallDir ..."
 for ($i = 0; $i -lt 10 -and (Test-Path $InstallDir); $i++) {
     Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path $InstallDir) { Start-Sleep -Milliseconds 700 }
@@ -43,19 +60,12 @@ if (Test-Path $InstallDir) {
     Write-Warning "Chưa xoá được $InstallDir (file còn bị giữ). Hãy đăng xuất/đăng nhập lại rồi xoá tay thư mục này."
 }
 
-Write-Host '4/5 Trả lại cài đặt XAML...'
+Write-Host '5/5 Trả lại cài đặt XAML...'
 $marker = Get-ItemProperty 'HKLM:\Software\AmLichVN' -Name SetCompositionDiag -ErrorAction SilentlyContinue
 if ($marker) {
     Remove-ItemProperty 'HKLM:\Software\Microsoft\XAML\Debug' -Name DisableCompositionDiag -ErrorAction SilentlyContinue
 }
 Remove-Item 'HKLM:\Software\AmLichVN' -Recurse -ErrorAction SilentlyContinue
-
-if ($KeepData) {
-    Write-Host "5/5 Giữ lại $DataDir"
-} else {
-    Write-Host "5/5 Xoá $DataDir ..."
-    Remove-Item $DataDir -Recurse -Force -ErrorAction SilentlyContinue
-}
 
 # Nếu bảng thông báo/lịch chưa tự chạy lại thì khởi động lại Explorer.
 if (-not (Get-Process ShellHost, ShellExperienceHost -ErrorAction SilentlyContinue)) {

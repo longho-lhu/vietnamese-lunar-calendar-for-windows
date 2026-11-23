@@ -56,7 +56,8 @@ namespace wuxm = winrt::Windows::UI::Xaml::Media;
 // Đường dẫn, log
 ////////////////////////////////////////////////////////////////////////////////
 
-std::wstring g_dataDir;      // %ProgramData%\AmLichVN
+std::wstring g_dataDir;      // %ProgramData%\AmLichVN (MSIX: <LocalState>\data)
+std::wstring g_userSid;      // SID người dùng, dùng trong tên file trạng thái/log
 std::wstring g_processName;  // ShellHost.exe / ShellExperienceHost.exe
 HMODULE g_hModule;           // chính DLL này
 std::atomic<bool> g_debugLog;
@@ -83,17 +84,37 @@ std::wstring NowString() {
     return buf;
 }
 
-// Ghi đè (CREATE_ALWAYS) hoặc nối thêm (OPEN_ALWAYS) một file UTF-8.
+// Ghi đè hoặc nối thêm một file UTF-8 trong <dữ liệu>\status.
+// FILE_FLAG_OPEN_REPARSE_POINT: nếu ai đó đặt symlink trùng tên thì mở chính
+// symlink chứ không đi theo nó tới file khác (và bị loại ở bước kiểm tra).
 void WriteUtf8File(const std::wstring& path,
                    const std::wstring& text,
                    bool append) {
-    HANDLE file = CreateFileW(path.c_str(),
-                              append ? FILE_APPEND_DATA : GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                              append ? OPEN_ALWAYS : CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Không cắt ngắn khi mở (OPEN_ALWAYS); chỉ ghi khi đó là file thường, một
+    // tên, do chính người dùng này sở hữu. File "chiếm chỗ" của người khác, hard
+    // link hay reparse point đều bị bỏ qua.
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        (append ? FILE_APPEND_DATA : (FILE_WRITE_DATA | FILE_APPEND_DATA)) |
+            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return;
+    }
+    if (!amlich::IsOwnSingleLinkFile(file)) {
+        CloseHandle(file);
+        return;
+    }
+    if (append) {
+        LARGE_INTEGER size{};
+        // Giữ log nhỏ: quá 512 KB thì bỏ qua (người dùng xóa được file của mình).
+        if (GetFileSizeEx(file, &size) && size.QuadPart > 512 * 1024) {
+            CloseHandle(file);
+            return;
+        }
+    } else {
+        SetEndOfFile(file);  // con trỏ đang ở đầu file: cắt về 0
     }
     std::string utf8 = ToUtf8(text);
     DWORD written;
@@ -115,7 +136,7 @@ void LogLine(PCWSTR fmt, ...) {
 
     if (g_debugLog && !g_dataDir.empty()) {
         std::lock_guard<std::mutex> lock(g_logMutex);
-        WriteUtf8File(g_dataDir + L"\\log-" + g_processName + L".txt",
+        WriteUtf8File(amlich::DllLogFilePath(g_dataDir, g_userSid, g_processName),
                       NowString() + L" " + line, true);
     }
 }
@@ -251,8 +272,8 @@ bool ReloadSettingsIfChanged() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Trạng thái tự kiểm tra -> %ProgramData%\AmLichVN\status\status-<tiến trình>.txt
-// AmLichVN.exe đọc file này để biết có hoạt động hay không.
+// Trạng thái tự kiểm tra -> <dữ liệu>\status\status-<SID>-<tiến trình>.txt
+// AmLichVN.exe của cùng người dùng đọc file này để biết có hoạt động hay không.
 ////////////////////////////////////////////////////////////////////////////////
 
 struct Status {
@@ -320,9 +341,8 @@ void WriteStatusFileLocked() {
     text += L"lastError=" + g_status.lastError + L"\r\n";
     text += L"calendarLikeTypes=" + types + L"\r\n";
 
-    WriteUtf8File(
-        g_dataDir + L"\\status\\status-" + g_processName + L".txt", text,
-        false);
+    WriteUtf8File(amlich::StatusFilePath(g_dataDir, g_userSid, g_processName),
+                  text, false);
 }
 
 void RecordError(PCWSTR where, HRESULT hr) {
@@ -1429,13 +1449,20 @@ void OnElementAdded(wf::IInspectable const& element,
 void EnsureInitialized() {
     static std::once_flag once;
     std::call_once(once, [] {
-        WCHAR programData[MAX_PATH];
-        DWORD n = GetEnvironmentVariableW(L"ProgramData", programData,
-                                          ARRAYSIZE(programData));
-        if (n == 0 || n >= ARRAYSIZE(programData)) {
-            wcscpy_s(programData, L"C:\\ProgramData");
+        // Bản MSIX: DLL nằm trong <LocalState>\tap, dữ liệu ở <LocalState>\data.
+        WCHAR dllPath[MAX_PATH] = L"";
+        GetModuleFileNameW(g_hModule, dllPath, ARRAYSIZE(dllPath));
+        g_dataDir = amlich::PackagedDataDirFromTapPath(dllPath);
+        if (g_dataDir.empty()) {
+            WCHAR programData[MAX_PATH];
+            DWORD n = GetEnvironmentVariableW(L"ProgramData", programData,
+                                              ARRAYSIZE(programData));
+            if (n == 0 || n >= ARRAYSIZE(programData)) {
+                wcscpy_s(programData, L"C:\\ProgramData");
+            }
+            g_dataDir = std::wstring(programData) + L"\\" AMLICH_DATA_DIR_NAME;
         }
-        g_dataDir = std::wstring(programData) + L"\\" AMLICH_DATA_DIR_NAME;
+        g_userSid = amlich::CurrentUserSidString();
 
         WCHAR exePath[MAX_PATH];
         DWORD len = GetModuleFileNameW(nullptr, exePath, ARRAYSIZE(exePath));

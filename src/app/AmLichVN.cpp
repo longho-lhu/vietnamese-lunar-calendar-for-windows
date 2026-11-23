@@ -12,10 +12,14 @@
 //   --quit           đóng bản AmLichVN.exe đang chạy
 //   --update-settings  mở cửa sổ "Cập nhật phần mềm"
 //   --check-update   kiểm tra cập nhật một lần, ghi kết quả vào app-log.txt
+//                    (%LOCALAPPDATA%\AmLichVN)
 //                    (mã thoát: 0 = mới nhất, 10 = có bản mới, 1 = lỗi)
 //   --apply-update <thư mục>  (nội bộ, chạy với quyền Administrator) kiểm tra
 //                    chữ ký rồi cài bản cập nhật đã tải vào <thư mục>
 //   --updated        (nội bộ) vừa cập nhật xong, hiện thông báo
+//   --secure-datadir (quyền Administrator) tạo / sửa quyền %ProgramData%\AmLichVN
+//                    (xem datadir.h); bộ cài gọi lệnh này
+//   --remove-datadir (quyền Administrator) xóa %ProgramData%\AmLichVN khi gỡ cài
 //
 // GNU GPL v3.0.
 
@@ -52,6 +56,7 @@
 
 #include "../common/shared.h"
 #include "../common/vnlunar.h"
+#include "datadir.h"
 #include "updater.h"
 
 // Giao diện điều khiển kiểu Windows hiện đại + TaskDialog (Common Controls 6).
@@ -87,6 +92,7 @@ enum MenuId : UINT {
     ID_UPDATE_NOW,
     ID_CHECK_UPDATE,
     ID_UPDATE_SETTINGS,
+    ID_SECURE_DATADIR,
 };
 
 HINSTANCE g_hInst;
@@ -97,6 +103,7 @@ NOTIFYICONDATAW g_nid{};
 HICON g_icon;
 int g_iconDay = -1;
 bool g_paused;  // người dùng đã chọn "Gỡ âm lịch khỏi lịch"
+bool g_dataDirInsecure;  // %ProgramData%\AmLichVN chưa được bộ cài bảo vệ
 
 std::wstring ExeDir() {
     WCHAR path[MAX_PATH];
@@ -124,14 +131,61 @@ bool IsPackaged() {
     return packaged == 1;
 }
 
-std::wstring DataDir() {
-    WCHAR programData[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"ProgramData", programData,
-                                      ARRAYSIZE(programData));
-    if (n == 0 || n >= ARRAYSIZE(programData)) {
-        wcscpy_s(programData, L"C:\\ProgramData");
+std::wstring LocalAppData() {
+    WCHAR buf[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, ARRAYSIZE(buf));
+    return (n && n < ARRAYSIZE(buf)) ? std::wstring(buf, n) : L"";
+}
+
+// Bản MSIX: %LOCALAPPDATA%\Packages\<gói>\LocalState (đường dẫn thật, riêng
+// từng người dùng). Chuỗi rỗng nếu không chạy trong gói.
+std::wstring PackageLocalState() {
+    WCHAR family[PACKAGE_FAMILY_NAME_MAX_LENGTH + 1];
+    UINT32 len = ARRAYSIZE(family);
+    std::wstring local = LocalAppData();
+    if (local.empty() || GetCurrentPackageFamilyName(&len, family) != ERROR_SUCCESS) {
+        return L"";
     }
-    return std::wstring(programData) + L"\\" AMLICH_DATA_DIR_NAME;
+    return local + L"\\Packages\\" + family + L"\\LocalState";
+}
+
+// Thư mục dữ liệu dùng chung với AmLichTap.dll (settings.ini, status\).
+//  - Bản cài thường: %ProgramData%\AmLichVN, do bộ cài (quyền Admin) tạo với
+//    ACL được bảo vệ (xem datadir.h). Tiến trình thường không tự tạo thư mục
+//    này, để người dùng khác không thể "chiếm chỗ" trước.
+//  - Bản MSIX: <LocalState>\data, riêng từng người dùng.
+std::wstring DataDir() {
+    if (IsPackaged()) {
+        std::wstring ls = PackageLocalState();
+        if (!ls.empty()) {
+            return ls + L"\\data";
+        }
+    }
+    return datadir::DataDirPath();
+}
+
+// Log của AmLichVN.exe: riêng từng người dùng, không nằm trong thư mục dùng
+// chung (%LOCALAPPDATA%\AmLichVN; bản MSIX: <LocalState>).
+std::wstring LogDir() {
+    if (IsPackaged()) {
+        std::wstring ls = PackageLocalState();
+        if (!ls.empty()) {
+            return ls;
+        }
+    }
+    std::wstring local = LocalAppData();
+    return local.empty() ? L"" : local + L"\\AmLichVN";
+}
+
+std::wstring WindowsDir() {
+    WCHAR buf[MAX_PATH];
+    UINT n = GetSystemWindowsDirectoryW(buf, ARRAYSIZE(buf));
+    return (n && n < ARRAYSIZE(buf)) ? std::wstring(buf, n) : L"C:\\Windows";
+}
+
+const std::wstring& UserSid() {
+    static const std::wstring sid = amlich::CurrentUserSidString();
+    return sid;
 }
 
 std::wstring ReadOsBuild() {
@@ -171,21 +225,29 @@ void RegSetString(PCWSTR name, const std::wstring& value) {
 
 void LogLine(const std::wstring& line) {
     OutputDebugStringW((L"[AmLichVN.exe] " + line + L"\r\n").c_str());
-    std::wstring path = DataDir() + L"\\app-log.txt";
+    std::wstring dir = LogDir();
+    if (dir.empty()) {
+        return;
+    }
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring path = dir + L"\\app-log.txt";
 
-    // Giữ file log nhỏ: quá 256 KB thì ghi lại từ đầu.
-    WIN32_FILE_ATTRIBUTE_DATA data;
-    bool truncate = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard,
-                                         &data) &&
-                    data.nFileSizeLow > 256 * 1024;
-
-    HANDLE file = CreateFileW(path.c_str(),
-                              truncate ? GENERIC_WRITE : FILE_APPEND_DATA,
-                              FILE_SHARE_READ, nullptr,
-                              truncate ? CREATE_ALWAYS : OPEN_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Không đi theo reparse point; kích thước lấy từ chính handle đã mở.
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                              nullptr, OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                              nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return;
+    }
+    // Giữ file log nhỏ: quá 256 KB thì ghi lại từ đầu.
+    LARGE_INTEGER size{};
+    LARGE_INTEGER zero{};
+    if (GetFileSizeEx(file, &size) && size.QuadPart > 256 * 1024) {
+        SetFilePointerEx(file, zero, nullptr, FILE_BEGIN);
+        SetEndOfFile(file);
+    } else {
+        SetFilePointerEx(file, zero, nullptr, FILE_END);
     }
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -274,12 +336,21 @@ struct DllStatus {
     DWORD Pid() const { return (DWORD)wcstoul(Get(L"pid").c_str(), nullptr, 10); }
 };
 
+// Chỉ tin file trạng thái là file thường, một tên và do chính người dùng hiện
+// tại sở hữu, tức là do AmLichTap.dll trong shell của người dùng này ghi. File
+// của người khác (kể cả file "chiếm chỗ" trùng tên) bị bỏ qua.
 bool ReadDllStatus(const std::wstring& processName, DllStatus* out) {
-    std::wstring path = DataDir() + L"\\status\\status-" + processName + L".txt";
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+    std::wstring path = amlich::StatusFilePath(DataDir(), UserSid(), processName);
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                              nullptr);
     if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    if (!amlich::IsOwnSingleLinkFile(file)) {
+        CloseHandle(file);
         return false;
     }
     char buf[8192];
@@ -879,6 +950,72 @@ void MessageDlg(HWND owner,
                 MB_OK | type);
 }
 
+// --- Bảo vệ thư mục dữ liệu ----------------------------------------------------
+
+// Bản cài từ trước phiên bản 1.3.0 để %ProgramData%\AmLichVN cho mọi người dùng
+// toàn quyền (kể cả xóa / tạo junction). Chạy lại "AmLichVN.exe
+// --secure-datadir" với quyền Administrator để sửa (bộ cài mới tự làm việc này).
+void PromptSecureDataDir(bool afterUpdate) {
+    if (IsPackaged()) {
+        return;
+    }
+    if (auto td = GetTaskDialog()) {
+        TASKDIALOGCONFIG c = BaseTaskDialogConfig(DialogOwner());
+        c.pszMainIcon = TD_SHIELD_ICON;
+        c.pszMainInstruction = L"Sửa quyền thư mục dữ liệu";
+        std::wstring content =
+            std::wstring(afterUpdate ? L"Bản cập nhật này siết lại quyền của thư mục "
+                                     : L"Thư mục ") +
+            DataDir() +
+            L" đang cho mọi người dùng trên máy quyền sửa / xóa. Cần quyền "
+            L"Administrator một lần để chỉ cho phép đọc và ghi đúng các file "
+            L"cần thiết.\n\nCác file trạng thái và log cũ trong thư mục sẽ được "
+            L"dọn; settings.ini được giữ nguyên.";
+        c.pszContent = content.c_str();
+        c.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+        c.nDefaultButton = IDYES;
+        SetForegroundWindow(g_hWnd);
+        int button = IDNO;
+        if (FAILED(td(&c, &button, nullptr, nullptr)) || button != IDYES) {
+            return;
+        }
+    } else if (MessageBoxW(g_hWnd,
+                           L"Cần quyền Administrator để sửa quyền thư mục dữ "
+                           L"liệu. Tiếp tục?",
+                           kAppName, MB_YESNO | MB_ICONWARNING) != IDYES) {
+        return;
+    }
+    std::wstring exe = ExePath();
+    SHELLEXECUTEINFOW sei{sizeof(sei)};
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    sei.hwnd = DialogOwner();
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = L"--secure-datadir";
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+        if (GetLastError() != ERROR_CANCELLED) {
+            MessageDlg(DialogOwner(), TD_ERROR_ICON, L"Không sửa được quyền",
+                       upd::Win32ErrorText(GetLastError()));
+        }
+        return;
+    }
+    WaitForSingleObject(sei.hProcess, 60 * 1000);
+    DWORD code = 1;
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    g_dataDirInsecure = datadir::Check() != datadir::State::Secure;
+    LogLine(L"--secure-datadir: mã " + std::to_wstring(code) +
+            (g_dataDirInsecure ? L", thư mục vẫn chưa an toàn" : L", đã an toàn"));
+    if (g_dataDirInsecure) {
+        MessageDlg(DialogOwner(), TD_ERROR_ICON, L"Không sửa được quyền",
+                   L"Mã lỗi " + std::to_wstring(code) +
+                       L". Hãy chạy lại CaiDat.cmd để cài đặt lại.");
+    } else {
+        ShowBalloon(L"Đã sửa quyền thư mục dữ liệu", DataDir());
+    }
+}
+
 // --- Kiểm tra ---------------------------------------------------------------
 
 void StartUpdateCheck(bool manual) {
@@ -1017,6 +1154,8 @@ void FinishUpdateAndRestart() {
 }
 
 void OnUpdateApplied(DWORD code) {
+    // Tiến trình cài (quyền Admin) không ghi log; ghi kết quả ở đây.
+    LogLine(L"Kết quả cài bản cập nhật: mã " + std::to_wstring(code));
     if (code == upd::kApplyOk) {
         FinishUpdateAndRestart();
         return;
@@ -1039,8 +1178,7 @@ void OnUpdateApplied(DWORD code) {
         default:
             detail = L"Lỗi khi cài đặt (mã " + std::to_wstring(code) + L").";
     }
-    detail += L"\n\nChi tiết nằm trong app-log.txt (menu > Mở thư mục dữ liệu "
-              L"/ log).";
+    detail += L"\n\nChi tiết nằm trong app-log.txt (menu > Mở thư mục log).";
     MessageDlg(DialogOwner(), TD_ERROR_ICON, L"Cập nhật không thành công",
                detail);
 }
@@ -1366,6 +1504,19 @@ std::wstring SettingsIniPath() {
     return DataDir() + L"\\" AMLICH_SETTINGS_FILE;
 }
 
+// Mở file bằng Notepad trong System32 (đường dẫn đầy đủ, không tìm theo PATH).
+void OpenInNotepad(HWND owner, const std::wstring& file) {
+    WCHAR sys[MAX_PATH];
+    UINT n = GetSystemDirectoryW(sys, ARRAYSIZE(sys));
+    if (!n || n >= ARRAYSIZE(sys)) {
+        return;
+    }
+    std::wstring notepad = std::wstring(sys, n) + L"\\notepad.exe";
+    std::wstring args = L"\"" + file + L"\"";
+    ShellExecuteW(owner, L"open", notepad.c_str(), args.c_str(), nullptr,
+                  SW_SHOWNORMAL);
+}
+
 int IniInt(PCWSTR key, int def) {
     return (int)GetPrivateProfileIntW(AMLICH_INI_SECTION, key, def,
                                       SettingsIniPath().c_str());
@@ -1379,6 +1530,13 @@ std::wstring IniString(PCWSTR key, PCWSTR def) {
 }
 
 bool IniWrite(PCWSTR key, const std::wstring& value) {
+    // Không ghi qua reparse point (settings.ini dùng chung cho mọi người dùng).
+    DWORD attrs = GetFileAttributesW(SettingsIniPath().c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return false;
+    }
     return WritePrivateProfileStringW(AMLICH_INI_SECTION, key, value.c_str(),
                                       SettingsIniPath().c_str()) != FALSE;
 }
@@ -1768,9 +1926,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd,
                     }
                     return 0;
                 case IDC_OPEN_INI:
-                    ShellExecuteW(hwnd, L"open", L"notepad.exe",
-                                  SettingsIniPath().c_str(), nullptr,
-                                  SW_SHOWNORMAL);
+                    OpenInNotepad(hwnd, SettingsIniPath());
                     return 0;
                 case IDC_SHOW_STATUS:
                     ShowStatusDialog();
@@ -1901,7 +2057,11 @@ void ShowMenu() {
     SetMenuDefaultItem(menu, ID_SETTINGS, FALSE);  // = bấm chuột trái
     AppendMenuW(menu, MF_STRING, ID_STATUS, L"Trạng thái...");
     AppendMenuW(menu, MF_STRING, ID_REINJECT, L"Nạp lại vào lịch");
-    AppendMenuW(menu, MF_STRING, ID_DATADIR, L"Mở thư mục dữ liệu / log");
+    AppendMenuW(menu, MF_STRING, ID_DATADIR, L"Mở thư mục log");
+    if (g_dataDirInsecure) {
+        AppendMenuW(menu, MF_STRING, ID_SECURE_DATADIR,
+                    L"Sửa quyền thư mục dữ liệu (cần quyền Admin)...");
+    }
     AppendMenuW(menu,
                 MF_STRING | (IsAutostartEnabled() ? MF_CHECKED : MF_UNCHECKED),
                 ID_AUTOSTART, L"Khởi động cùng Windows");
@@ -1958,11 +2118,19 @@ void OnCommand(UINT id) {
             OpenSettingsWindow();
             break;
         case ID_DATADIR: {
-            std::wstring path = DataDir();
-            ShellExecuteW(g_hWnd, L"open", path.c_str(), nullptr, nullptr,
-                          SW_SHOWNORMAL);
+            // Mở bằng explorer.exe (đường dẫn đầy đủ), không để ShellExecute
+            // tự chọn cách "mở" một đường dẫn.
+            std::wstring dir = LogDir();
+            CreateDirectoryW(dir.c_str(), nullptr);
+            std::wstring explorer = WindowsDir() + L"\\explorer.exe";
+            std::wstring args = L"\"" + dir + L"\"";
+            ShellExecuteW(g_hWnd, L"open", explorer.c_str(), args.c_str(),
+                          nullptr, SW_SHOWNORMAL);
             break;
         }
+        case ID_SECURE_DATADIR:
+            PromptSecureDataDir(false);
+            break;
         case ID_AUTOSTART:
             SetAutostart(!IsAutostartEnabled());
             if (g_settingsWnd) {
@@ -2039,6 +2207,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         case WM_COMMAND:
+            if (LOWORD(wParam) == ID_SECURE_DATADIR && lParam == 1) {
+                PromptSecureDataDir(true);  // ngay sau khi cập nhật OTA
+                return 0;
+            }
             OnCommand(LOWORD(wParam));
             return 0;
         case WM_DESTROY:
@@ -2067,11 +2239,8 @@ bool HasArg(PCWSTR arg) {
     return found;
 }
 
-// Bản MSIX không chạy install.ps1 nên tự làm phần việc của nó: tạo
-// %ProgramData%\AmLichVN, cấp quyền ghi cho tiến trình bảng lịch (chạy trong
-// AppContainer) và tạo settings.ini mặc định.
-//
 // Thêm quyền `rights` (kế thừa xuống thư mục con / file) cho các SID dạng chuỗi.
+// Chỉ dùng cho thư mục riêng của người dùng (LocalState của gói MSIX).
 void GrantAccess(const std::wstring& dir,
                  std::initializer_list<PCWSTR> sidStrings,
                  DWORD rights) {
@@ -2121,33 +2290,27 @@ void GrantAccess(const std::wstring& dir,
     LocalFree(sd);
 }
 
+// Bản MSIX không chạy install.ps1: tự tạo thư mục dữ liệu <LocalState>\data
+// (riêng người dùng này), cho tiến trình bảng lịch (AppContainer) đọc / ghi
+// file trong đó, và tạo settings.ini mặc định.
 void EnsurePackagedDataDir() {
+    std::wstring ls = PackageLocalState();
+    if (ls.empty()) {
+        return;
+    }
     std::wstring dir = DataDir();
     CreateDirectoryW(dir.c_str(), nullptr);
     CreateDirectoryW((dir + L"\\status").c_str(), nullptr);
-    // ALL APPLICATION PACKAGES + Users: DLL trong shell ghi file trạng thái.
-    GrantAccess(dir, {L"S-1-15-2-1", L"S-1-5-32-545"},
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE |
-                    DELETE);
+    GrantAccess(dir, {L"S-1-15-2-1"},
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE);
 
     std::wstring ini = dir + L"\\" AMLICH_SETTINGS_FILE;
     if (GetFileAttributesW(ini.c_str()) != INVALID_FILE_ATTRIBUTES) {
         return;
     }
-    // settings.default.ini (UTF-8) trong gói -> settings.ini UTF-16 để
-    // GetPrivateProfileString và Notepad đọc đúng tiếng Việt.
-    std::string utf8;
+    std::string bytes =
+        datadir::DefaultIniBytes(ExeDir() + L"\\settings.default.ini");
     std::wstring err;
-    if (!upd::ReadWholeFile(ExeDir() + L"\\settings.default.ini", 256 * 1024,
-                            &utf8, &err)) {
-        return;
-    }
-    if (utf8.size() >= 3 && (unsigned char)utf8[0] == 0xEF &&
-        (unsigned char)utf8[1] == 0xBB && (unsigned char)utf8[2] == 0xBF) {
-        utf8.erase(0, 3);
-    }
-    std::wstring text = L"\xFEFF" + upd::Utf8ToWide(utf8);
-    std::string bytes((const char*)text.data(), text.size() * sizeof(wchar_t));
     if (upd::WriteWholeFile(ini, bytes, &err)) {
         LogLine(L"Đã tạo settings.ini mặc định");
     }
@@ -2161,16 +2324,11 @@ void EnsurePackagedDataDir() {
 // của bạn.
 std::wstring PrepareTapDll() {
     std::wstring src = ExeDir() + L"\\" AMLICH_TAP_DLL;
-    WCHAR family[PACKAGE_FAMILY_NAME_MAX_LENGTH + 1];
-    UINT32 len = ARRAYSIZE(family);
-    WCHAR local[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, ARRAYSIZE(local));
-    if (GetCurrentPackageFamilyName(&len, family) != ERROR_SUCCESS || n == 0 ||
-        n >= ARRAYSIZE(local)) {
+    std::wstring ls = PackageLocalState();
+    if (ls.empty()) {
         return src;
     }
-    std::wstring dir = std::wstring(local, n) + L"\\Packages\\" + family +
-                       L"\\LocalState\\tap";
+    std::wstring dir = ls + L"\\tap";
     SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
     GrantAccess(dir, {L"S-1-15-2-1"}, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE);
 
@@ -2217,10 +2375,10 @@ bool GetArgValue(PCWSTR arg, std::wstring* value) {
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_hInst = hInstance;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CreateDirectoryW(DataDir().c_str(), nullptr);
-    g_tapDllPath =
-        IsPackaged() ? PrepareTapDll() : ExeDir() + L"\\" AMLICH_TAP_DLL;
 
+    // --- Các lệnh chạy với quyền Administrator ---------------------------
+    // Xử lý trước mọi thứ khác và KHÔNG ghi log / đụng tới đường dẫn của người
+    // dùng: kết quả trả về qua mã thoát, tiến trình gọi tự ghi log.
     std::wstring applyDir;
     if (GetArgValue(L"--apply-update", &applyDir)) {
         if (IsPackaged()) {
@@ -2228,10 +2386,23 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         }
         std::wstring result;
         DWORD code = upd::ApplyUpdate(applyDir, ExeDir(), &result);
-        LogLine(L"--apply-update: " + result + L" (mã " +
-                std::to_wstring(code) + L")");
+        if (code == upd::kApplyOk) {
+            // Bản mới được cài: đồng thời siết quyền thư mục dữ liệu.
+            datadir::Secure(ExeDir() + L"\\settings.default.ini");
+        }
         return (int)code;
     }
+    if (HasArg(L"--secure-datadir")) {
+        return IsPackaged() ? 1
+                            : (int)datadir::Secure(ExeDir() +
+                                                   L"\\settings.default.ini");
+    }
+    if (HasArg(L"--remove-datadir")) {
+        return IsPackaged() ? 1 : (int)datadir::Remove();
+    }
+
+    g_tapDllPath =
+        IsPackaged() ? PrepareTapDll() : ExeDir() + L"\\" AMLICH_TAP_DLL;
 
     if (HasArg(L"--check-update")) {
         upd::CheckResult r = upd::CheckForUpdate(UpdateRepo());
@@ -2299,6 +2470,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     InitCommonControlsEx(&icc);
     upd::DeleteTree(upd::LocalUpdateRoot());  // dọn file tải tạm của lần trước
     bool justUpdated = HasArg(L"--updated");
+    datadir::State dataState = datadir::State::Secure;
+    if (!IsPackaged()) {
+        dataState = datadir::Check();
+        g_dataDirInsecure = dataState != datadir::State::Secure;
+    }
     if (justUpdated) {
         LogLine(L"Đã cập nhật lên phiên bản " AMLICH_VERSION);
         RegSetString(L"UpdateLastResult",
@@ -2345,6 +2521,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         ShowBalloon(L"Đã cập nhật",
                     L"Âm lịch Việt Nam đã được cập nhật lên phiên bản " AMLICH_VERSION
                     L".");
+    }
+
+    if (dataState == datadir::State::Insecure) {
+        LogLine(L"Thư mục dữ liệu " + DataDir() +
+                L" chưa được bảo vệ (bản cài cũ)");
+        if (justUpdated) {
+            // Vừa cập nhật từ bản cũ qua OTA: hỏi luôn (một lần UAC).
+            PostMessageW(g_hWnd, WM_COMMAND, ID_SECURE_DATADIR, 1);
+        } else if (!buildChanged) {
+            ShowBalloon(L"Cần sửa quyền thư mục dữ liệu",
+                        L"Bấm chuột phải vào icon > \"Sửa quyền thư mục dữ "
+                        L"liệu\" (cần quyền Admin).",
+                        NIIF_WARNING);
+        }
     }
 
     CheckAndInject();

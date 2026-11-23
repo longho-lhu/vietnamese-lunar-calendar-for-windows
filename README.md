@@ -29,7 +29,7 @@ Bảng lịch sẽ tắt vài giây rồi tự mở lại với bản mới. Ứ
 1. Chạy `GoCaiDat.cmd`. File này có trong thư mục đã giải nén, và cả trong `C:\Program Files\AmLichVN`.
 2. Bấm **Yes** khi Windows hỏi quyền Administrator.
 
-Âm lịch sẽ biến mất khỏi bảng lịch. Ứng dụng, cài đặt và log trong `C:\ProgramData\AmLichVN` cũng bị xóa.
+Âm lịch sẽ biến mất khỏi bảng lịch. Ứng dụng và cài đặt trong `C:\ProgramData\AmLichVN` cũng bị xóa. File log nhỏ trong `%LOCALAPPDATA%\AmLichVN` được giữ lại, bạn có thể xóa tay thư mục này.
 
 ## Giấy phép
 [GNU GPL v3.0](LICENSE). Phần nạp vào giao diện Windows dựa trên [TranslucentTB](https://github.com/TranslucentTB/TranslucentTB) và mod "Windows 11 Notification Center Styler" của m417z, cả hai theo GPL-3.0. Thuật toán âm lịch: Hồ Ngọc Đức.

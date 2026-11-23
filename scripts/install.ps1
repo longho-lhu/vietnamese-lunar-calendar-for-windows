@@ -5,8 +5,10 @@
 
 .DESCRIPTION
   - Chép AmLichVN.exe + AmLichTap.dll vào "C:\Program Files\AmLichVN"
-  - Tạo thư mục dữ liệu "C:\ProgramData\AmLichVN" (cài đặt, trạng thái, log)
-    và cấp quyền để tiến trình bảng lịch của Windows ghi được trạng thái.
+  - Tạo / sửa quyền thư mục dữ liệu "C:\ProgramData\AmLichVN" (settings.ini,
+    status\) qua "AmLichVN.exe --secure-datadir": chỉ Administrators sở hữu,
+    người dùng thường chỉ đọc + sửa settings.ini và tạo file trạng thái của
+    chính mình.
   - Bật HKLM\Software\Microsoft\XAML\Debug\DisableCompositionDiag = 1 để tránh
     lỗi khi cơ chế chẩn đoán XAML chạy trên nhiều luồng giao diện.
   - Khởi động AmLichVN.exe (lần chạy đầu tự bật "Khởi động cùng Windows").
@@ -36,7 +38,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 $InstallDir = Join-Path $env:ProgramFiles 'AmLichVN'
 $DataDir    = Join-Path $env:ProgramData 'AmLichVN'
-$Files      = 'AmLichVN.exe', 'AmLichTap.dll'
+$Files      = 'AmLichVN.exe', 'AmLichTap.dll', 'settings.default.ini'
 
 foreach ($f in $Files) {
     if (-not (Test-Path (Join-Path $Source $f))) {
@@ -82,20 +84,17 @@ foreach ($s in 'install.ps1', 'uninstall.ps1', 'check.ps1', 'ConsoleFont.ps1', '
 # Tiến trình bảng lịch (có thể chạy trong AppContainer) phải đọc được DLL.
 icacls $InstallDir /grant '*S-1-15-2-1:(OI)(CI)RX' | Out-Null
 
-Write-Host "4/6 Tạo thư mục dữ liệu $DataDir ..."
-New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'status') | Out-Null
-# Users + ALL APPLICATION PACKAGES được ghi (DLL trong shell ghi file trạng thái).
-icacls $DataDir /grant '*S-1-5-32-545:(OI)(CI)M' '*S-1-15-2-1:(OI)(CI)M' /T | Out-Null
-
+Write-Host "4/6 Tạo thư mục dữ liệu $DataDir và đặt quyền..."
+# Không dùng New-Item / icacls ở đây: chúng đi theo junction / symlink. Việc này
+# do AmLichVN.exe làm qua handle, không đi theo reparse point (xem datadir.h).
 $settings = Join-Path $DataDir 'settings.ini'
-if (-not (Test-Path $settings)) {
-    # UTF-16 để Windows (GetPrivateProfileString) và Notepad đọc đúng tiếng Việt.
-    Get-Content (Join-Path $Source 'settings.default.ini') -Encoding UTF8 |
-        Set-Content $settings -Encoding Unicode
-    Write-Host '    Đã tạo settings.ini mặc định.'
-} else {
-    Write-Host '    Giữ nguyên settings.ini hiện có.'
+$p = Start-Process (Join-Path $InstallDir 'AmLichVN.exe') -ArgumentList '--secure-datadir' `
+    -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode -ne 0) {
+    throw "Không tạo / đặt quyền được cho $DataDir (mã $($p.ExitCode))."
 }
+# Log cũ (trước 1.3.0) nằm trong thư mục dữ liệu và đã được dọn; log mới ở
+# %LOCALAPPDATA%\AmLichVN của từng người dùng.
 
 Write-Host '5/6 Bật DisableCompositionDiag cho cơ chế chẩn đoán XAML...'
 $xamlKey = 'HKLM:\Software\Microsoft\XAML\Debug'

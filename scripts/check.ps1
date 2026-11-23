@@ -51,13 +51,21 @@ $diag = Get-ItemProperty 'HKLM:\Software\Microsoft\XAML\Debug' -Name DisableComp
 Line 'DisableCompositionDiag:' $(if ($diag.DisableCompositionDiag -eq 1) { '1 (đúng)' } else { 'chưa đặt' }) $(if ($diag.DisableCompositionDiag -eq 1) { 'Green' } else { 'Yellow' })
 
 # 3. Trạng thái do DLL ghi trong tiến trình bảng lịch
+# Chỉ đọc file của chính người dùng này (tên mang SID, chủ sở hữu đúng), bỏ
+# qua reparse point; bỏ ký tự điều khiển trước khi in ra màn hình.
+function Clean($s) { if ($null -eq $s) { '' } else { $s -replace '[\x00-\x1F\x7F-\x9F]', '?' } }
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $overall = 'PENDING'
-$statusFiles = Get-ChildItem (Join-Path $DataDir 'status') -Filter 'status-*.txt' -ErrorAction SilentlyContinue
+$statusFiles = @(Get-ChildItem (Join-Path $DataDir 'status') -Filter "status-$($me.Value)-*.txt" -ErrorAction SilentlyContinue |
+    Where-Object {
+        -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        (Get-Acl -LiteralPath $_.FullName).GetOwner([Security.Principal.SecurityIdentifier]) -eq $me
+    })
 foreach ($sf in $statusFiles) {
     $kv = @{}
-    Get-Content $sf.FullName -Encoding UTF8 | ForEach-Object {
+    Get-Content -LiteralPath $sf.FullName -Encoding UTF8 -TotalCount 50 | ForEach-Object {
         $i = $_.IndexOf('=')
-        if ($i -gt 0) { $kv[$_.Substring(0, $i)] = $_.Substring($i + 1) }
+        if ($i -gt 0) { $kv[$_.Substring(0, $i)] = Clean $_.Substring($i + 1) }
     }
     $alive = $false
     if ($kv.pid) { $alive = [bool](Get-Process -Id ([int]$kv.pid) -ErrorAction SilentlyContinue) }
@@ -92,11 +100,11 @@ switch ($overall) {
 }
 foreach ($p in $problems) { Write-Host " - $p" -ForegroundColor Yellow }
 
-$log = Join-Path $DataDir 'app-log.txt'
-if (Test-Path $log) {
+$log = Join-Path $env:LOCALAPPDATA 'AmLichVN\app-log.txt'
+if ($env:LOCALAPPDATA -and (Test-Path -LiteralPath $log)) {
     Write-Host ''
     Write-Host '--- 10 dòng log cuối của AmLichVN.exe ---' -ForegroundColor DarkGray
-    Get-Content $log -Encoding UTF8 -Tail 10 | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+    Get-Content -LiteralPath $log -Encoding UTF8 -Tail 10 | ForEach-Object { Write-Host (Clean $_) -ForegroundColor DarkGray }
 }
 Write-Host ''
 if ($Host.Name -eq 'ConsoleHost') { Read-Host 'Nhấn Enter để đóng' | Out-Null }
